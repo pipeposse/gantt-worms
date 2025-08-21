@@ -85,6 +85,7 @@ with st.expander("Ver/ocultar editor", expanded=True):
 
     # Guardar siempre al archivo
     st.session_state["df"].to_csv(FILE_PATH, index=False)
+    edited_df.to_csv(FILE_PATH, index=False)
 
     # --- Botones ---
     col1, col2, col3 = st.columns(3)
