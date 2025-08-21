@@ -77,6 +77,16 @@ with st.expander("Ver/ocultar editor", expanded=True):
     edited_df = pd.DataFrame(grid["data"])
     selected = grid["selected_rows"]
 
+# Validar y guardar cambios en memoria
+st.session_state["df"], warns = main.validate(edited_df)
+if warns:
+    st.info(" ; ".join(warns))
+
+# ⚡ Guardar siempre al archivo después de cada edición
+if not st.session_state["df"].empty:
+    st.session_state["df"].to_csv(FILE_PATH, index=False)
+
+
     # Validar y guardar cambios en memoria
     st.session_state["df"], warns = main.validate(edited_df)
     if warns:
