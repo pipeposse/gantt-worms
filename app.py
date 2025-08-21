@@ -11,17 +11,18 @@ st.set_page_config(page_title="Gantt Proyectos", layout="wide", page_icon="📊"
 FILE_PATH = "tareas.txt"
 
 # ---------- Inicializar datos ----------
-if "df" not in st.session_state:
-    if os.path.exists(FILE_PATH) and os.path.getsize(FILE_PATH) > 0:
-        st.session_state["df"] = pd.read_csv(FILE_PATH)
-        st.session_state["df"] = main.ensure_schema(st.session_state["df"])
-    else:
-        st.session_state["df"] = main.sample_data()
-        st.session_state["df"].to_csv(FILE_PATH, index=False)
+if not os.path.exists(FILE_PATH) or os.path.getsize(FILE_PATH) == 0:
+    # Si no existe tareas.txt -> generar con sample_data
+    df_init = main.sample_data()
+    df_init.to_csv(FILE_PATH, index=False)
+
+# Siempre leer desde archivo al arrancar
+st.session_state["df"] = pd.read_csv(FILE_PATH)
+st.session_state["df"] = main.ensure_schema(st.session_state["df"])
 
 # ---------- Sidebar ----------
 st.sidebar.title("📋 Configuración")
-st.sidebar.caption("Carga, filtros y exportaciones")
+st.sidebar.caption("Filtros y exportaciones")
 
 # Filtros
 df = st.session_state["df"]
@@ -40,7 +41,7 @@ df = main.filter_df(df, projects, statuses, priorities, collab, start_after, end
 # ---------- Header ----------
 st.title("🚀 Gantt de Proyectos (Streamlit)")
 st.write("Administra visualmente tus proyectos: edita tareas en tabla, filtra y compartí el Gantt. "
-         "Exportá a CSV o calendario (.ics). Los cambios se guardan en `tareas.txt`.")
+         "Todos los cambios se guardan automáticamente en `tareas.txt`.")
 
 # ---------- Editable Grid ----------
 st.subheader("✏️ Editor de tareas")
@@ -77,24 +78,15 @@ with st.expander("Ver/ocultar editor", expanded=True):
     edited_df = pd.DataFrame(grid["data"])
     selected = grid["selected_rows"]
 
-# Validar y guardar cambios en memoria
-st.session_state["df"], warns = main.validate(edited_df)
-if warns:
-    st.info(" ; ".join(warns))
-
-# ⚡ Guardar siempre al archivo después de cada edición
-if not st.session_state["df"].empty:
-    st.session_state["df"].to_csv(FILE_PATH, index=False)
-
-
-    # Validar y guardar cambios en memoria
+    # Validar y guardar en memoria
     st.session_state["df"], warns = main.validate(edited_df)
     if warns:
         st.info(" ; ".join(warns))
 
-    # Guardar automáticamente cada edición
+    # Guardar siempre al archivo
     st.session_state["df"].to_csv(FILE_PATH, index=False)
 
+    # --- Botones ---
     col1, col2, col3 = st.columns(3)
     if col1.button("➕ Agregar tarea"):
         new_row = {
@@ -180,11 +172,6 @@ with col1:
 with col2:
     ics_text = main.to_ics(st.session_state["df"], cal_name="Proyectos")
     st.download_button("📅 Exportar ICS", data=ics_text.encode("utf-8"), file_name="gantt_calendar.ics", mime="text/calendar")
-
-# ---------- Guardar manual ----------
-if st.button("💾 Guardar cambios manualmente"):
-    st.session_state["df"].to_csv(FILE_PATH, index=False)
-    st.success(f"Cambios guardados en {FILE_PATH}")
 
 st.markdown("---")
 st.caption("Hecho con ❤️ en Streamlit + Plotly + AgGrid")
