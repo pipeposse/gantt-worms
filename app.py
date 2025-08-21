@@ -3,30 +3,25 @@ import streamlit as st
 import pandas as pd
 from datetime import timedelta
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+import os
 import main  # módulo local con funciones auxiliares
 
 st.set_page_config(page_title="Gantt Proyectos", layout="wide", page_icon="📊")
 
+FILE_PATH = "tareas.txt"
+
 # ---------- Inicializar datos ----------
 if "df" not in st.session_state:
-    st.session_state["df"] = main.sample_data()
+    if os.path.exists(FILE_PATH) and os.path.getsize(FILE_PATH) > 0:
+        st.session_state["df"] = pd.read_csv(FILE_PATH)
+        st.session_state["df"] = main.ensure_schema(st.session_state["df"])
+    else:
+        st.session_state["df"] = main.sample_data()
+        st.session_state["df"].to_csv(FILE_PATH, index=False)
 
 # ---------- Sidebar ----------
 st.sidebar.title("📋 Configuración")
 st.sidebar.caption("Carga, filtros y exportaciones")
-
-src = st.sidebar.radio("Fuente de datos", ["Ejemplo", "Subir CSV", "En blanco"], index=0, horizontal=True)
-
-if src == "Ejemplo":
-    st.session_state["df"] = main.sample_data()
-elif src == "Subir CSV":
-    up = st.sidebar.file_uploader("CSV con columnas estándar", type=["csv"])
-    if up is not None:
-        st.session_state["df"] = main.load_csv(up)
-    else:
-        st.sidebar.info("Subí un archivo CSV para continuar.")
-else:
-    st.session_state["df"] = main.ensure_schema(pd.DataFrame())
 
 # Filtros
 df = st.session_state["df"]
@@ -45,7 +40,7 @@ df = main.filter_df(df, projects, statuses, priorities, collab, start_after, end
 # ---------- Header ----------
 st.title("🚀 Gantt de Proyectos (Streamlit)")
 st.write("Administra visualmente tus proyectos: edita tareas en tabla, filtra y compartí el Gantt. "
-         "Exportá a CSV o calendario (.ics).")
+         "Exportá a CSV o calendario (.ics). Los cambios se guardan en `tareas.txt`.")
 
 # ---------- Editable Grid ----------
 st.subheader("✏️ Editor de tareas")
@@ -82,10 +77,13 @@ with st.expander("Ver/ocultar editor", expanded=True):
     edited_df = pd.DataFrame(grid["data"])
     selected = grid["selected_rows"]
 
-    # Guardar cambios en session_state
+    # Validar y guardar cambios en memoria
     st.session_state["df"], warns = main.validate(edited_df)
     if warns:
         st.info(" ; ".join(warns))
+
+    # Guardar automáticamente cada edición
+    st.session_state["df"].to_csv(FILE_PATH, index=False)
 
     col1, col2, col3 = st.columns(3)
     if col1.button("➕ Agregar tarea"):
@@ -102,11 +100,13 @@ with st.expander("Ver/ocultar editor", expanded=True):
             "priority": "Medium",
         }
         st.session_state["df"] = pd.concat([st.session_state["df"], pd.DataFrame([new_row])], ignore_index=True)
+        st.session_state["df"].to_csv(FILE_PATH, index=False)
 
     if col2.button("🗑️ Borrar seleccionadas"):
         if selected:
             sel_ids = [r["id"] for r in selected if r.get("id") is not None]
             st.session_state["df"] = st.session_state["df"][~st.session_state["df"]["id"].isin(sel_ids)]
+            st.session_state["df"].to_csv(FILE_PATH, index=False)
         else:
             st.warning("No hay filas seleccionadas.")
 
@@ -115,6 +115,7 @@ with st.expander("Ver/ocultar editor", expanded=True):
             dup = pd.DataFrame(selected).copy()
             dup["id"] = None
             st.session_state["df"] = pd.concat([st.session_state["df"], dup], ignore_index=True)
+            st.session_state["df"].to_csv(FILE_PATH, index=False)
         else:
             st.warning("No hay filas seleccionadas.")
 
@@ -169,6 +170,11 @@ with col1:
 with col2:
     ics_text = main.to_ics(st.session_state["df"], cal_name="Proyectos")
     st.download_button("📅 Exportar ICS", data=ics_text.encode("utf-8"), file_name="gantt_calendar.ics", mime="text/calendar")
+
+# ---------- Guardar manual ----------
+if st.button("💾 Guardar cambios manualmente"):
+    st.session_state["df"].to_csv(FILE_PATH, index=False)
+    st.success(f"Cambios guardados en {FILE_PATH}")
 
 st.markdown("---")
 st.caption("Hecho con ❤️ en Streamlit + Plotly + AgGrid")
