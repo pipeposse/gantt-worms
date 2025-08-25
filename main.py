@@ -228,3 +228,4 @@ def to_ics(df: pd.DataFrame, cal_name: str = "Proyectos"):
         ]
     lines.append("END:VCALENDAR")
     return "\n".join(lines)
+#oki
