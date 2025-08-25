@@ -9,13 +9,18 @@ st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_
 if "df" not in st.session_state:
     st.session_state.df = main.fetch_tasks()
 
-st.title("🚀 Gantt de Proyectos (Streamlit + Supabase)")
-st.caption("Edición nativa con `st.data_editor`. Guardá con 💾 y recargá desde Supabase cuando quieras.")
+sb_ok = main.supabase_ready()
+st.sidebar.markdown("### 🔌 Conexión")
+if sb_ok:
+    st.sidebar.success("Supabase conectado")
+else:
+    st.sidebar.warning("Modo demo: sin Supabase (solo lectura)")
+
+st.title("🚀 Gantt de Proyectos")
+st.caption("UI robusta (st.data_editor). Si no hay DB, se muestran datos de ejemplo para no cortar la demo.")
 
 # ---------- Editor (nativo) ----------
 st.subheader("✏️ Editor de tareas")
-
-# Agregamos una columna auxiliar para marcar filas a borrar
 df_edit = st.session_state.df.copy()
 df_edit.insert(0, "BORRAR", False)
 
@@ -51,36 +56,41 @@ edited = st.data_editor(
     hide_index=True,
 )
 
-# ---------- Acciones ----------
 col1, col2, col3 = st.columns(3)
-
 with col1:
-    if st.button("💾 Guardar (upsert)"):
-        # quitar col auxiliar y normalizar
+    if st.button("💾 Guardar (upsert)", use_container_width=True):
         to_save = edited.drop(columns=["BORRAR"], errors="ignore")
         to_save = main.ensure_schema(to_save)
-        main.upsert_tasks(to_save)
-        st.success("Cambios guardados en Supabase.")
-        st.session_state.df = main.fetch_tasks()
+        if sb_ok:
+            main.upsert_tasks(to_save)
+            st.success("Cambios guardados en Supabase.")
+            st.session_state.df = main.fetch_tasks()
+        else:
+            st.info("Modo demo: cambios aplicados solo en pantalla (no persistidos).")
+            st.session_state.df = to_save
 
 with col2:
-    if st.button("🗑️ Borrar marcadas"):
+    if st.button("🗑️ Borrar marcadas", use_container_width=True):
         ids = edited.loc[edited["BORRAR"] == True, "id"].dropna().astype(int).tolist()
         if ids:
-            main.delete_tasks(ids)
-            st.success(f"Eliminadas {len(ids)} fila(s).")
-            st.session_state.df = main.fetch_tasks()
+            if sb_ok:
+                main.delete_tasks(ids)
+                st.success(f"Eliminadas {len(ids)} fila(s) en Supabase.")
+                st.session_state.df = main.fetch_tasks()
+            else:
+                st.info("Modo demo: solo se ocultan en pantalla.")
+                st.session_state.df = st.session_state.df[~st.session_state.df["id"].isin(ids)]
         else:
             st.warning("No hay filas con ID marcadas para borrar.")
 
 with col3:
-    if st.button("🔄 Recargar desde Supabase"):
+    if st.button("🔄 Recargar desde Supabase", use_container_width=True):
         st.session_state.df = main.fetch_tasks()
         st.info("Datos recargados.")
 
 st.divider()
 
-# ---------- Filtros de vista ----------
+# ---------- Filtros y Gantt ----------
 st.sidebar.title("🔎 Filtros")
 df_view = st.session_state.df.copy()
 
@@ -104,14 +114,17 @@ if start_after is not None:
 if end_before is not None:
     df_view = df_view[(df_view["start"].isna()) | (df_view["start"] <= end_before)]
 
-# ---------- Gantt ----------
 st.subheader("📈 Gantt")
-color_by = st.selectbox("Color por", ["progress","status","priority","project_name","rag"], index=0)
-group_by_project = st.checkbox("Agrupar por proyecto (eje Y)", value=True)
-fig = main.make_gantt(df_view, color_by=color_by, group_by_project=group_by_project)
-st.plotly_chart(fig, use_container_width=True)
+mostrar_gantt = st.toggle("Mostrar Gantt", value=True, help="Apagalo si hubiera problemas de render.")
+if mostrar_gantt:
+    try:
+        fig = main.make_gantt(df_view, color_by=st.selectbox("Color por", ["progress","status","priority","project_name","rag"], index=0),
+                              group_by_project=st.checkbox("Agrupar por proyecto (eje Y)", value=True))
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error("No pude renderizar el Gantt. Muestro tabla.")
+        st.exception(e)
 
-# ---------- Tabla simple ----------
 st.subheader("📋 Tabla (vista filtrada)")
 st.dataframe(df_view, use_container_width=True)
 
@@ -119,5 +132,3 @@ st.dataframe(df_view, use_container_width=True)
 st.subheader("📤 Exportar")
 csv_bytes = st.session_state.df.to_csv(index=False).encode("utf-8")
 st.download_button("⬇️ CSV (todo)", data=csv_bytes, file_name="gantt_tasks.csv", mime="text/csv")
-
-st.caption("UI simple y robusta: st.data_editor + Supabase. Si querés, luego reactivamos AgGrid.")

@@ -21,12 +21,20 @@ FRONT_COLS = [
     "phase","workstream","tags","external_link"
 ]
 
-# ---------- Supabase client ----------
+# ---------- Supabase client (tolerante a fallos) ----------
 @st.cache_resource
-def get_sb() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_ANON_KEY"]
-    return create_client(url, key)
+def get_sb() -> Client | None:
+    try:
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_ANON_KEY")
+        if not url or not key:
+            return None
+        return create_client(url, key)
+    except Exception:
+        return None
+
+def supabase_ready() -> bool:
+    return get_sb() is not None
 
 # ---------- utils fechas/listas ----------
 def _coerce_date(x):
@@ -70,8 +78,21 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[~df["rag"].isin(ENUM_RAG), "rag"] = pd.NA
     return df[FRONT_COLS]
 
+def sample_data() -> pd.DataFrame:
+    today = pd.Timestamp.today().normalize()
+    data = [
+        [1,"Encuesta Clima ACE","Diseño cuestionario","V1 + validación","Felipe","Carla, Gise",today- pd.Timedelta(days=7), today+pd.Timedelta(days=2),75,"En progreso","Alta","Verde",False,None,None,None,None,"Planificación","RRHH","clima, encuesta","https://notion.so/encuesta"],
+        [2,"Encuesta Clima ACE","Limpieza de datos","Tratar nulos","Carla","Felipe",today+pd.Timedelta(days=3), today+pd.Timedelta(days=8),10,"No iniciado","Media","Amarillo",True,None,None,None,None,"Ejecución","RRHH","presentacion, direccion","https://drive.google.com/file/d/abc"],
+        [3,"Portal BI Ventas","Dashboard margen","Márgenes por BU","Gise","Felipe",today- pd.Timedelta(days=2), today+pd.Timedelta(days=10),25,"En progreso","Alta","Rojo",False,None,None,None,None,"Construcción","BI","dashboard, ventas","https://figma.com/file/dashboard"],
+        [4,"Portal BI Ventas","Definir permisos RLS","Mapa seguridad","Felipe","Nico, Fer",today- pd.Timedelta(days=10), today- pd.Timedelta(days=1),100,"Completado","Crítica","Verde",False,None,None, today- pd.Timedelta(days=10), today- pd.Timedelta(days=1),"Construcción","BI","seguridad, permisos","https://jira.com/browse/BI-12"],
+        [5,"CDF Finanzas","Arqueo ODC/ODV","Conciliar pagos/recibos","Fer","Nico",today- pd.Timedelta(days=10), today- pd.Timedelta(days=1),100,"Completado","Crítica","Verde",False,None,None, today- pd.Timedelta(days=10), today- pd.Timedelta(days=1),"Ejecución","Finanzas","conciliacion, arqueo","https://confluence/wiki/finanzas"],
+    ]
+    df = pd.DataFrame(data, columns=FRONT_COLS)
+    return ensure_schema(df)
+
 def df_from_supabase(rows: list[dict]) -> pd.DataFrame:
-    if not rows: return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
+    if not rows: 
+        return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
     df = pd.DataFrame(rows).rename(columns={"start_date":"start","end_date":"end"})
     if "collaborators" in df.columns:
         df["collaborators"] = df["collaborators"].apply(_to_csv_from_list)
@@ -108,14 +129,24 @@ def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
         })
     return out
 
-# ---------- CRUD ----------
+# ---------- CRUD (con fallback) ----------
 def fetch_tasks() -> pd.DataFrame:
     sb = get_sb()
-    res = sb.table(TABLE).select("*").order("project_name").order("start_date").execute()
-    return df_from_supabase(res.data or [])
+    if sb is None:
+        st.info("⚠️ Sin conexión Supabase: usando datos de ejemplo (solo lectura).")
+        return sample_data()
+    try:
+        res = sb.table(TABLE).select("*").order("project_name").order("start_date").execute()
+        return df_from_supabase(res.data or [])
+    except Exception as e:
+        st.warning(f"No pude leer Supabase, uso datos de ejemplo. Detalle: {e}")
+        return sample_data()
 
 def upsert_tasks(df: pd.DataFrame):
     sb = get_sb()
+    if sb is None:
+        st.warning("Sin conexión a Supabase: cambios NO persistidos (demo).")
+        return
     payload = payload_for_upsert(df)
     if payload:
         sb.table(TABLE).upsert(payload, on_conflict="id").execute()
@@ -123,11 +154,15 @@ def upsert_tasks(df: pd.DataFrame):
 def delete_tasks(ids: list[int]):
     if not ids: return
     sb = get_sb()
+    if sb is None:
+        st.warning("Sin conexión a Supabase: borrado NO persistido (demo).")
+        return
     sb.table(TABLE).delete().in_("id", ids).execute()
 
-# ---------- Gantt ----------
+# ---------- Gantt (fondo claro para evitar pantalla negra) ----------
 def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: bool = True):
-    if df.empty: return px.line()
+    if df.empty: 
+        return px.line().update_layout(template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF")
     df_plot = df.dropna(subset=["start","end"]).copy()
     df_plot["progress_label"] = df_plot["progress"].astype(int).astype(str) + "%"
     df_plot["task_label"] = df_plot["task"].str.slice(0, 40)
@@ -139,16 +174,17 @@ def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: b
                     "status":True,"priority":True,"rag":True,
                     "progress":True,"start":"|%Y-%m-%d","end":"|%Y-%m-%d"},
         text="progress_label",
-        title="Cronograma de Proyectos (Gantt)"
+        title="Cronograma de Proyectos (Gantt)",
+        template="plotly_white",
     )
     fig.update_traces(textposition="inside", insidetextanchor="middle", cliponaxis=False)
     fig.update_yaxes(autorange="reversed")
-    # Fondo transparente para evitar "pantalla negra" con temas oscuros
     fig.update_layout(
         bargap=0.2,
         margin=dict(l=10, r=10, t=60, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        height=520,
     )
     today = pd.Timestamp.today().normalize()
     fig.add_vline(x=today, line_width=2, line_dash="dash", opacity=0.6)
