@@ -1,10 +1,8 @@
-Acá tenés el **`main.py` actualizado** (parcheado para el error de `pd.NA` y con CRUD + Gantt). Pega tal cual:
-
-```python
 # main.py
 from __future__ import annotations
 import os
 from datetime import datetime, date
+from typing import Optional, List, Dict, Any
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -31,7 +29,7 @@ SUPABASE_URL = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY")
 
 @st.cache_resource
-def get_sb() -> Client | None:
+def get_sb() -> Optional[Client]:
     try:
         if not SUPABASE_URL or not SUPABASE_ANON_KEY:
             return None
@@ -43,7 +41,7 @@ def supabase_ready() -> bool:
     return get_sb() is not None
 
 # ----------------- Utils -----------------
-def _coerce_date(x):
+def _coerce_date(x: Any) -> Optional[date]:
     if x is None:
         return None
     try:
@@ -63,11 +61,8 @@ def _coerce_date(x):
     except Exception:
         return None
 
-def _to_list_from_csv(s):
-    """
-    "a, b, c" -> ["a","b","c"]
-    Maneja None / pd.NA / np.nan y listas ya válidas.
-    """
+def _to_list_from_csv(s: Any) -> Optional[List[str]]:
+    # None / NA
     if s is None:
         return None
     try:
@@ -75,17 +70,16 @@ def _to_list_from_csv(s):
             return None
     except Exception:
         pass
+    # Lista
     if isinstance(s, list):
         return [str(x).strip() for x in s if str(x).strip() != ""]
-    s = str(s).strip()
-    if s == "" or s.lower() in ("nan", "none", "<na>"):
+    # Cadena
+    s_str = str(s).strip()
+    if s_str == "" or s_str.lower() in ("nan", "none", "<na>"):
         return None
-    return [p.strip() for p in s.split(",") if p.strip() != ""]
+    return [p.strip() for p in s_str.split(",") if p.strip() != ""]
 
-def _to_csv_from_list(lst):
-    """
-    Lista -> "a, b, c" para mostrar en la UI.
-    """
+def _to_csv_from_list(lst: Any) -> str:
     if lst is None:
         return ""
     try:
@@ -105,10 +99,8 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = pd.NA
 
-    # tipos
     df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
 
-    # columnas tipo texto: mantener como object y pasar NA -> None
     text_like = [
         "project_name", "task", "details", "owner",
         "status", "priority", "rag", "phase",
@@ -118,40 +110,38 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].astype("object")
         df[c] = df[c].where(~pd.isna(df[c]), None)
 
-    # fechas
     for c in ["start", "end", "baseline_start", "baseline_end", "actual_start", "actual_end"]:
         df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # numéricos / booleanos
     df["progress"] = pd.to_numeric(df["progress"], errors="coerce").fillna(0).astype(int).clip(0, 100)
     df["milestone"] = df["milestone"].apply(lambda v: False if v is None or (isinstance(v, float) and pd.isna(v)) else bool(v))
 
-    # enums (aplicar default si viene vacío/incorrecto)
     mask_status_bad = df["status"].isna() | ~df["status"].isin(ENUM_STATUS)
     df.loc[mask_status_bad, "status"] = "No iniciado"
 
     mask_prio_bad = df["priority"].isna() | ~df["priority"].isin(ENUM_PRIORITY)
     df.loc[mask_prio_bad, "priority"] = "Media"
 
-    # RAG puede ser None; si viene texto inválido, limpiar a None
     df.loc[~df["rag"].isin(ENUM_RAG) & ~df["rag"].isna(), "rag"] = None
 
     return df[FRONT_COLS]
 
-def df_from_supabase(rows: list[dict]) -> pd.DataFrame:
+def df_from_supabase(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     if not rows:
         return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
     df = pd.DataFrame(rows).rename(columns={"start_date": "start", "end_date": "end"})
-    # arrays -> csv string para UI
     if "collaborators" in df.columns:
         df["collaborators"] = df["collaborators"].apply(_to_csv_from_list)
     if "tags" in df.columns:
-        df["tags"] = df["tags"].apply(_to_csv_from_list) if isinstance(df["tags"], pd.Series) else _to_csv_from_list(df["tags"])
+        if isinstance(df["tags"], pd.Series):
+            df["tags"] = df["tags"].apply(_to_csv_from_list)
+        else:
+            df["tags"] = _to_csv_from_list(df["tags"])
     return ensure_schema(df)
 
-def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
+def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
     df = ensure_schema(df)
-    out: list[dict] = []
+    out = []  # type: List[Dict[str, Any]]
     for _, r in df.iterrows():
         item = {
             "id": int(r["id"]) if not pd.isna(r["id"]) else None,
@@ -183,17 +173,15 @@ def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
 def fetch_tasks() -> pd.DataFrame:
     sb = get_sb()
     if sb is None:
-        # Fallback demo
         demo = pd.DataFrame([
             {"id": 1, "project_name": "Demo", "task": "Tarea 1", "status": "No iniciado", "priority": "Media", "progress": 0},
             {"id": 2, "project_name": "Demo", "task": "Tarea 2", "status": "En progreso", "priority": "Alta", "progress": 50},
         ])
-        # garantizar columnas
         return ensure_schema(demo)
     res = sb.table(TABLE).select("*").order("project_name").order("start_date").execute()
     return df_from_supabase(res.data or [])
 
-def upsert_tasks(df: pd.DataFrame):
+def upsert_tasks(df: pd.DataFrame) -> None:
     sb = get_sb()
     if sb is None:
         st.warning("Sin conexión a Supabase: cambios NO persistidos (demo).")
@@ -202,7 +190,7 @@ def upsert_tasks(df: pd.DataFrame):
     if payload:
         sb.table(TABLE).upsert(payload, on_conflict="id").execute()
 
-def delete_tasks(ids: list[int]):
+def delete_tasks(ids: List[int]) -> None:
     if not ids:
         return
     sb = get_sb()
@@ -243,4 +231,3 @@ def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: b
     today = pd.Timestamp.today().normalize()
     fig.add_vline(x=today, line_width=2, line_dash="dash", opacity=0.6)
     return fig
-```
