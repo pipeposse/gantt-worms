@@ -5,7 +5,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import main
 import supabase_client as sbc
 
-st.set_page_config(page_title="Gantt Proyectos Pipeta (Supabase)", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_icon="📊")
 
 st.title("🚀 Dashboard Proyectos (Supabase)")
 st.caption("Conexión directa a la tabla `tasks` en Supabase.")
@@ -14,12 +14,17 @@ st.caption("Conexión directa a la tabla `tasks` en Supabase.")
 # 1. Estado de conexión
 # =========================
 ok, data = main.check_connection()
-if ok:
-    st.success("✅ Conectado correctamente a Supabase")
-    df_full = main.df_from_supabase(data)
-else:
-    st.error("❌ Error al conectar con Supabase")
+if not ok:
+    st.error(f"❌ Error al conectar con Supabase: {data}")
     st.stop()
+
+# Inicializar session_state
+if "df_full" not in st.session_state:
+    st.session_state["df_full"] = main.df_from_supabase(data)
+
+df_full = st.session_state["df_full"]
+
+st.success("✅ Conectado correctamente a Supabase")
 
 # =========================
 # 2. Vista tabla cruda
@@ -59,21 +64,30 @@ with st.form("new_task_form", clear_on_submit=True):
 
     submitted = st.form_submit_button("➕ Agregar")
     if submitted:
-        new_row = {
-            "project_name": project_name,
-            "task": task,
-            "details": details,
-            "owner": owner,
-            "collaborators": [c.strip() for c in collaborators.split(",")] if collaborators else None,
-            "start_date": pd.to_datetime(start_date).date(),
-            "end_date": pd.to_datetime(end_date).date(),
-            "progress": progress,
-            "status": status,
-            "priority": priority,
-            "rag": rag if rag else None,
-        }
-        sbc.insert_rows([new_row])
-        st.success(f"Tarea '{task}' agregada a Supabase.")
+        if not project_name or not task:
+            st.error("Proyecto y Tarea son obligatorios.")
+        elif end_date < start_date:
+            st.error("La fecha de fin no puede ser anterior a la de inicio.")
+        else:
+            new_row = {
+                "project_name": project_name,
+                "task": task,
+                "details": details,
+                "owner": owner,
+                "collaborators": [c.strip() for c in collaborators.split(",")] if collaborators else None,
+                "start_date": pd.to_datetime(start_date).date(),
+                "end_date": pd.to_datetime(end_date).date(),
+                "progress": progress,
+                "status": status,
+                "priority": priority,
+                "rag": rag if rag else None,
+            }
+            sbc.insert_rows([new_row])
+            st.success(f"Tarea '{task}' agregada a Supabase.")
+            # refrescar
+            _, data = main.check_connection()
+            st.session_state["df_full"] = main.df_from_supabase(data)
+            st.experimental_rerun()
 
 st.markdown("---")
 
@@ -85,11 +99,13 @@ st.subheader("✏️ Editor de tareas")
 gb = GridOptionsBuilder.from_dataframe(df_full)
 gb.configure_default_column(resizable=True, filter=True, sortable=True, editable=True)
 
+# Configurar enums editables
 gb.configure_column("status", cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_STATUS})
 gb.configure_column("priority", cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_PRIORITY})
 gb.configure_column("rag", cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_RAG})
 
 gb.configure_selection("multiple", use_checkbox=True)
+
 grid = AgGrid(
     df_full,
     gridOptions=gb.build(),
@@ -109,14 +125,26 @@ with c1:
         payload = main.payload_for_upsert(edited_df)
         sbc.upsert_rows(payload)
         st.success("Cambios guardados en Supabase.")
+        # refrescar
+        _, data = main.check_connection()
+        st.session_state["df_full"] = main.df_from_supabase(data)
+        st.experimental_rerun()
+
 with c2:
     if st.button("🗑️ Eliminar seleccionadas"):
         if selected:
-            ids = [r["id"] for r in selected if "id" in r]
-            sbc.delete_by_ids(ids)
-            st.success(f"Eliminadas {len(ids)} filas.")
+            ids = [r.get("id") for r in selected if r.get("id")]
+            if ids:
+                sbc.delete_by_ids(ids)
+                st.success(f"Eliminadas {len(ids)} filas.")
+                _, data = main.check_connection()
+                st.session_state["df_full"] = main.df_from_supabase(data)
+                st.experimental_rerun()
+            else:
+                st.warning("Las filas seleccionadas no tienen ID válido.")
         else:
             st.warning("Seleccioná filas para borrar.")
+
 with c3:
     if st.button("🔄 Recargar"):
         _, data = main.check_connection()
@@ -131,4 +159,3 @@ st.markdown("---")
 st.subheader("📈 Vista Gantt")
 fig = main.make_gantt(edited_df)
 st.plotly_chart(fig, use_container_width=True)
-    

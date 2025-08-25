@@ -5,6 +5,7 @@ import streamlit as st
 
 
 
+
 # Cargar desde secrets.toml
 url = st.secrets["connections"]["supabase"]["SUPABASE_URL"]
 key = st.secrets["connections"]["supabase"]["SUPABASE_KEY"]
