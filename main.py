@@ -6,21 +6,17 @@ from datetime import datetime, date
 import plotly.express as px
 import streamlit as st
 
-import supabase_client as sbc  # <- tu cliente centralizado
+import supabase_client as sbc  # cliente centralizado
 
 # =========================
 # Config
 # =========================
-TABLE = "tasks"
-
-# Columnas esperadas en la UI (grid y gráficos)
 FRONT_COLS = [
     "id", "project_name", "task", "details", "owner",
     "collaborators",  # coma-separado en UI; en DB es text[]
     "start", "end",   # mapean a start_date, end_date
     "progress", "status", "priority",
     "rag", "milestone",
-    # extras útiles
     "baseline_start", "baseline_end",
     "actual_start", "actual_end",
     "phase", "workstream", "tags", "external_link",
@@ -53,7 +49,7 @@ def _to_list_from_csv(s):
         return None
     if isinstance(s, list):
         return s
-    parts = [p.strip() for p in str(s).split(",") if str(p).strip() != ""]
+    parts = [p.strip() for p in str(s).split(",") if str(p).strip()]
     return parts if parts else None
 
 def _to_csv_from_list(lst):
@@ -84,7 +80,6 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     df["progress"] = pd.to_numeric(df["progress"], errors="coerce").fillna(0).astype(int).clip(0,100)
     df["milestone"] = df["milestone"].astype(str).str.lower().isin(["true","1","t","y","yes"])
 
-    # normalizar enums si están fuera de rango
     df.loc[~df["status"].isin(ENUM_STATUS), "status"] = "No iniciado"
     df.loc[~df["priority"].isin(ENUM_PRIORITY), "priority"] = "Media"
     df.loc[~df["rag"].isin(ENUM_RAG), "rag"] = ""
@@ -93,16 +88,12 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
 def df_from_supabase(rows: list[dict]) -> pd.DataFrame:
     if not rows:
         return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
-
     df = pd.DataFrame(rows).copy()
     df = df.rename(columns={"start_date": "start", "end_date": "end"})
-
-    # arrays -> cadena amigable
     if "collaborators" in df.columns:
         df["collaborators"] = df["collaborators"].apply(_to_csv_from_list)
     if "tags" in df.columns:
         df["tags"] = df["tags"].apply(_to_csv_from_list)
-
     df = ensure_schema(df)
     return df
 
@@ -153,16 +144,14 @@ def delete_tasks(ids: list[int]):
         sbc.delete_by_ids(ids)
 
 # =========================
-# UX: Métricas y Gantt
+# UX: KPIs y Gantt
 # =========================
 def kpi_counts(df: pd.DataFrame):
     total = len(df)
     in_prog = (df["status"] == "En progreso").sum()
     done = (df["status"] == "Completado").sum()
-    overdue = 0
     today = pd.Timestamp.today().normalize()
-    mask_overdue = (df["end"].notna() & (df["end"] < today) & (df["progress"] < 100))
-    overdue = mask_overdue.sum()
+    overdue = ((df["end"].notna()) & (df["end"] < today) & (df["progress"] < 100)).sum()
     return total, in_prog, done, overdue
 
 def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: bool = True):
@@ -176,21 +165,12 @@ def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: b
     y = "project_name" if group_by_project else "task_label"
     fig = px.timeline(
         df_plot,
-        x_start="start",
-        x_end="end",
-        y=y,
+        x_start="start", x_end="end", y=y,
         color=color_by,
         hover_data={
-            "task": True,
-            "details": True,
-            "owner": True,
-            "collaborators": True,
-            "status": True,
-            "priority": True,
-            "rag": True,
-            "progress": True,
-            "start": "|%Y-%m-%d",
-            "end": "|%Y-%m-%d",
+            "task": True, "details": True, "owner": True, "collaborators": True,
+            "status": True, "priority": True, "rag": True,
+            "progress": True, "start": "|%Y-%m-%d", "end": "|%Y-%m-%d",
             "external_link": True,
         },
         text="progress_label",
@@ -200,18 +180,12 @@ def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: b
     fig.update_yaxes(autorange="reversed")
     today = pd.Timestamp.today().normalize()
     fig.add_vline(x=today, line_width=2, line_dash="dash", opacity=0.6)
-    fig.update_layout(
-        bargap=0.25,
-        margin=dict(l=10, r=10, t=60, b=10),
-        legend_title_text=color_by.capitalize(),
-    )
+    fig.update_layout(bargap=0.25, margin=dict(l=10, r=10, t=60, b=10), legend_title_text=color_by.capitalize())
     return fig
 
 def to_ics(df: pd.DataFrame, cal_name: str = "Proyectos"):
     df = df.dropna(subset=["start","end"]).copy()
-    lines = [
-        "BEGIN:VCALENDAR","VERSION:2.0",f"X-WR-CALNAME:{cal_name}","PRODID:-//Streamlit Gantt//ES",
-    ]
+    lines = ["BEGIN:VCALENDAR","VERSION:2.0",f"X-WR-CALNAME:{cal_name}","PRODID:-//Streamlit Gantt//ES"]
     now = pd.Timestamp.utcnow().strftime("%Y%m%dT%H%M%SZ")
     for _, row in df.iterrows():
         uid = f"{row.get('id','x')}@streamlit-gantt"
@@ -220,12 +194,9 @@ def to_ics(df: pd.DataFrame, cal_name: str = "Proyectos"):
         summary = f"{row['project_name']} – {row['task']} ({int(row['progress'])}%)"
         desc = f"Owner: {row.get('owner','')}. Estado: {row.get('status','')}."
         lines += [
-            "BEGIN:VEVENT",
-            f"UID:{uid}", f"DTSTAMP:{now}",
+            "BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{now}",
             f"DTSTART;VALUE=DATE:{dtstart}", f"DTEND;VALUE=DATE:{dtend}",
-            f"SUMMARY:{summary}", f"DESCRIPTION:{desc}",
-            "END:VEVENT",
+            f"SUMMARY:{summary}", f"DESCRIPTION:{desc}", "END:VEVENT",
         ]
     lines.append("END:VCALENDAR")
     return "\n".join(lines)
-#oki

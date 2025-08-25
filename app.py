@@ -8,37 +8,28 @@ import main
 st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_icon="📊")
 
 # =========================
-# Estilos y layout
+# Estilos
 # =========================
-CUSTOM_CSS = """
+st.markdown("""
 <style>
-/* Contenedor principal más aireado */
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-/* Badges simples */
-.badge {display:inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.8rem;}
-.badge.rag-Verde {background: #E6F4EA; color: #137333;}
-.badge.rag-Amarillo {background: #FEF7E0; color: #B06E00;}
-.badge.rag-Rojo {background: #FCE8E6; color: #A50E0E;}
-/* Botonera */
+.block-container {padding-top: 1.1rem; padding-bottom: 2rem;}
 .action-bar .stButton>button {border-radius: 10px; padding: 0.45rem 0.9rem;}
-/* KPIs */
 .kpi {padding: 0.9rem; border-radius: 12px; background: #f8f9fb; border: 1px solid #eef1f5;}
 .kpi h3 {margin: 0; font-size: 0.95rem; color: #6b7280;}
 .kpi .num {font-size: 1.6rem; font-weight: 700; margin-top: 0.25rem;}
 </style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # =========================
-# Carga inicial
+# Carga inicial (Supabase)
 # =========================
 if "df_full" not in st.session_state:
     st.session_state["df_full"] = main.fetch_tasks()
 
 st.title("🚀 Gantt de Proyectos")
-st.caption("Edición directa, filtros rápidos y vista Gantt con línea de hoy. Persistencia en Supabase.")
+st.caption("Edición directa, filtros rápidos y vista Gantt con línea de hoy. Persistencia en Supabase (PostgreSQL).")
 
-# KPIs rápidos
+# KPIs
 total, in_prog, done, overdue = main.kpi_counts(st.session_state["df_full"])
 c1, c2, c3, c4 = st.columns(4)
 with c1: st.markdown(f'<div class="kpi"><h3>Total tareas</h3><div class="num">{total}</div></div>', unsafe_allow_html=True)
@@ -49,7 +40,7 @@ with c4: st.markdown(f'<div class="kpi"><h3>Vencidas</h3><div class="num">{overd
 st.markdown("---")
 
 # =========================
-# Editor (fuente de verdad)
+# Editor (CRUD)
 # =========================
 st.subheader("✏️ Editor de tareas")
 with st.expander("Abrir editor", expanded=True):
@@ -70,14 +61,11 @@ with st.expander("Abrir editor", expanded=True):
     gb.configure_column("progress", header_name="Progreso (%)", type=["numericColumn"], minWidth=130)
 
     gb.configure_column("status", header_name="Estado",
-                        cellEditor="agSelectCellEditor",
-                        cellEditorParams={"values": main.ENUM_STATUS})
+                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_STATUS})
     gb.configure_column("priority", header_name="Prioridad",
-                        cellEditor="agSelectCellEditor",
-                        cellEditorParams={"values": main.ENUM_PRIORITY})
+                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_PRIORITY})
     gb.configure_column("rag", header_name="RAG",
-                        cellEditor="agSelectCellEditor",
-                        cellEditorParams={"values": main.ENUM_RAG})
+                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_RAG})
     gb.configure_column("milestone", header_name="Milestone")
 
     gb.configure_column("phase", header_name="Fase")
@@ -86,10 +74,11 @@ with st.expander("Abrir editor", expanded=True):
     gb.configure_column("external_link", header_name="Link externo", flex=1)
 
     gb.configure_selection("multiple", use_checkbox=True)
+
     grid = AgGrid(
         df,
         gridOptions=gb.build(),
-        theme="alpine",  # estética limpia
+        theme="alpine",
         update_mode=GridUpdateMode.MODEL_CHANGED,
         data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
         fit_columns_on_grid_load=True,
@@ -100,15 +89,15 @@ with st.expander("Abrir editor", expanded=True):
     edited_df = pd.DataFrame(grid["data"])
     selected = grid["selected_rows"]
 
-    # Normalizar/asegurar
     edited_df = main.ensure_schema(edited_df)
     st.session_state["df_full"] = edited_df
 
     st.markdown('<div class="action-bar">', unsafe_allow_html=True)
     a1, a2, a3, a4 = st.columns([1,1,1,2])
+
     with a1:
         if st.button("➕ Agregar tarea"):
-            new_row = pd.DataFrame([{
+            new = pd.DataFrame([{
                 "id": None,
                 "project_name": "Nuevo Proyecto",
                 "task": "Nueva tarea",
@@ -127,34 +116,33 @@ with st.expander("Abrir editor", expanded=True):
                 "tags": "",
                 "external_link": ""
             }])
-            st.session_state["df_full"] = pd.concat([st.session_state["df_full"], new_row], ignore_index=True)
-            st.toast("Fila agregada. No olvides 💾 Guardar (upsert).")
+            st.session_state["df_full"] = pd.concat([st.session_state["df_full"], new], ignore_index=True)
+            st.toast("Fila agregada. Guardá con 💾.")
 
     with a2:
         if st.button("🗑️ Borrar seleccionadas"):
             if selected:
                 sel_ids = [r.get("id") for r in selected if r.get("id") is not None]
                 if sel_ids:
-                    main.delete_tasks(sel_ids)  # borra en DB
+                    main.delete_tasks(sel_ids)  # DELETE en Supabase
                     st.session_state["df_full"] = st.session_state["df_full"][~st.session_state["df_full"]["id"].isin(sel_ids)]
-                    st.success("Registros eliminados en Supabase.")
+                    st.success("Eliminadas en Supabase.")
                 else:
-                    # Son filas nuevas aún sin ID -> solo las saco de session_state
-                    to_drop = pd.DataFrame(selected).dropna(subset=["task"])
-                    if not to_drop.empty:
-                        st.session_state["df_full"] = st.session_state["df_full"][~st.session_state["df_full"]["task"].isin(to_drop["task"])]
-                        st.info("Filas locales sin ID eliminadas. Guardá para sincronizar.")
+                    # filas nuevas sin ID -> borralas localmente
+                    tmp = pd.DataFrame(selected)
+                    st.session_state["df_full"] = st.session_state["df_full"].drop(index=tmp.index, errors="ignore")
+                    st.info("Filas locales sin ID eliminadas.")
             else:
                 st.warning("No hay filas seleccionadas.")
 
     with a3:
         if st.button("💾 Guardar (upsert)"):
-            main.upsert_tasks(st.session_state["df_full"])
+            main.upsert_tasks(st.session_state["df_full"])  # UPSERT en Supabase
             st.success("Cambios guardados en Supabase.")
-            st.session_state["df_full"] = main.fetch_tasks()
+            st.session_state["df_full"] = main.fetch_tasks()  # refrescar (IDs autogenerados)
 
     with a4:
-        if st.button("🔄 Recargar desde Supabase"):
+        if st.button("🔄 Recargar"):
             st.session_state["df_full"] = main.fetch_tasks()
             st.info("Datos recargados.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -188,7 +176,7 @@ if end_before is not None:
     df_view = df_view[(df_view["start"].isna()) | (df_view["start"] <= end_before)]
 
 # =========================
-# Tabs de visualización
+# Tabs
 # =========================
 tab_gantt, tab_table, tab_cal = st.tabs(["📈 Gantt", "📋 Tabla", "📅 Calendario"])
 
@@ -202,7 +190,7 @@ with tab_table:
     st.dataframe(df_view, use_container_width=True, height=420)
 
 with tab_cal:
-    st.write("Calendario mensual básico (vista filtrada).")
+    st.write("Calendario mensual (vista filtrada).")
     today = pd.Timestamp.today()
     month = st.date_input("Mes", value=today.date().replace(day=1))
     if isinstance(month, tuple): month = month[0]
@@ -221,13 +209,9 @@ with tab_cal:
         while d <= d1:
             if month_start.date() <= d <= month_end.date():
                 rows.append({
-                    "date": d,
-                    "project": r["project_name"],
-                    "task": r["task"],
-                    "owner": r["owner"],
-                    "progress": int(r["progress"]),
-                    "status": r["status"],
-                    "rag": r["rag"]
+                    "date": d, "project": r["project_name"], "task": r["task"],
+                    "owner": r["owner"], "progress": int(r["progress"]),
+                    "status": r["status"], "rag": r["rag"]
                 })
             d += timedelta(days=1)
     cal_df = pd.DataFrame(rows)
@@ -248,4 +232,4 @@ with c2:
     ics_text = main.to_ics(df_view if not df_view.empty else st.session_state["df_full"], cal_name="Proyectos")
     st.download_button("📅 ICS (vista)", data=ics_text.encode("utf-8"), file_name="gantt_calendar.ics", mime="text/calendar")
 
-st.caption("UI moderna con AgGrid + Plotly. Datos persistidos en Supabase.")
+st.caption("CRUD completo sobre Supabase. Sin archivos locales.")
