@@ -1,113 +1,89 @@
 # app.py
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import main
 
 st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_icon="📊")
 
-# Carga inicial
-if "df_full" not in st.session_state:
-    st.session_state["df_full"] = main.fetch_tasks()
+# ---------- Estado inicial ----------
+if "df" not in st.session_state:
+    st.session_state.df = main.fetch_tasks()
 
 st.title("🚀 Gantt de Proyectos (Streamlit + Supabase)")
-st.caption("Editá en la tabla. Usá 💾 Guardar (upsert) para sincronizar con Supabase.")
+st.caption("Edición nativa con `st.data_editor`. Guardá con 💾 y recargá desde Supabase cuando quieras.")
 
-# ----- Editor -----
+# ---------- Editor (nativo) ----------
 st.subheader("✏️ Editor de tareas")
-df_full = st.session_state["df_full"]
 
-with st.expander("Abrir editor", expanded=True):
-    gb = GridOptionsBuilder.from_dataframe(df_full)
-    gb.configure_default_column(resizable=True, filter=True, sortable=True, editable=True)
-    gb.configure_column("id", type=["numericColumn"], editable=False)
-    gb.configure_column("project_name", header_name="Proyecto")
-    gb.configure_column("task", header_name="Tarea")
-    gb.configure_column("details", header_name="Detalles", flex=2)
-    gb.configure_column("owner", header_name="Owner")
-    gb.configure_column("collaborators", header_name="Colaboradores (coma-separados)")
-    gb.configure_column("start", header_name="Inicio", type=["dateColumn"],
-                        valueFormatter="value && new Date(value).toISOString().slice(0,10)")
-    gb.configure_column("end", header_name="Fin", type=["dateColumn"],
-                        valueFormatter="value && new Date(value).toISOString().slice(0,10)")
-    gb.configure_column("progress", header_name="Progreso (%)", type=["numericColumn"], minWidth=130)
-    gb.configure_column("status", header_name="Estado",
-                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_STATUS})
-    gb.configure_column("priority", header_name="Prioridad",
-                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_PRIORITY})
-    gb.configure_column("rag", header_name="RAG",
-                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_RAG})
-    gb.configure_column("milestone", header_name="Milestone")
-    gb.configure_column("phase", header_name="Fase")
-    gb.configure_column("workstream", header_name="Workstream")
-    gb.configure_column("tags", header_name="Tags (coma-separados)")
-    gb.configure_column("external_link", header_name="Link externo", flex=1)
-    gb.configure_selection("multiple", use_checkbox=True)
+# Agregamos una columna auxiliar para marcar filas a borrar
+df_edit = st.session_state.df.copy()
+df_edit.insert(0, "BORRAR", False)
 
-    grid = AgGrid(
-        df_full,
-        gridOptions=gb.build(),
-        theme="material",
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-        fit_columns_on_grid_load=True,
-        allow_unsafe_jscode=True,
-        height=390,
-    )
+config = {
+    "id": st.column_config.NumberColumn("ID", help="Autogenerado", disabled=True),
+    "project_name": st.column_config.TextColumn("Proyecto"),
+    "task": st.column_config.TextColumn("Tarea"),
+    "details": st.column_config.TextColumn("Detalles"),
+    "owner": st.column_config.TextColumn("Owner"),
+    "collaborators": st.column_config.TextColumn("Colaboradores (coma-separados)"),
+    "start": st.column_config.DateColumn("Inicio", format="YYYY-MM-DD"),
+    "end": st.column_config.DateColumn("Fin", format="YYYY-MM-DD"),
+    "progress": st.column_config.NumberColumn("Progreso (%)", min_value=0, max_value=100, step=1),
+    "status": st.column_config.SelectboxColumn("Estado", options=main.ENUM_STATUS),
+    "priority": st.column_config.SelectboxColumn("Prioridad", options=main.ENUM_PRIORITY),
+    "rag": st.column_config.SelectboxColumn("RAG", options=[""] + main.ENUM_RAG),
+    "milestone": st.column_config.CheckboxColumn("Milestone"),
+    "baseline_start": st.column_config.DateColumn("Baseline inicio", format="YYYY-MM-DD"),
+    "baseline_end": st.column_config.DateColumn("Baseline fin", format="YYYY-MM-DD"),
+    "actual_start": st.column_config.DateColumn("Real inicio", format="YYYY-MM-DD"),
+    "actual_end": st.column_config.DateColumn("Real fin", format="YYYY-MM-DD"),
+    "phase": st.column_config.TextColumn("Fase"),
+    "workstream": st.column_config.TextColumn("Workstream"),
+    "tags": st.column_config.TextColumn("Tags (coma-separados)"),
+    "external_link": st.column_config.LinkColumn("Link externo"),
+}
 
-    edited_df = pd.DataFrame(grid["data"])
-    selected = grid["selected_rows"]
+edited = st.data_editor(
+    df_edit,
+    column_config=config,
+    use_container_width=True,
+    num_rows="dynamic",  # permite agregar filas desde la UI
+    hide_index=True,
+)
 
-    edited_df = main.ensure_schema(edited_df)
-    st.session_state["df_full"] = edited_df
+# ---------- Acciones ----------
+col1, col2, col3 = st.columns(3)
 
-    c1, c2, c3, c4 = st.columns(4)
-    if c1.button("➕ Agregar tarea"):
-        new_row = pd.DataFrame([{
-            "id": None,
-            "project_name": "Nuevo Proyecto",
-            "task": "Nueva tarea",
-            "details": "",
-            "owner": "",
-            "collaborators": "",
-            "start": pd.Timestamp.today(),
-            "end": pd.Timestamp.today() + pd.Timedelta(days=7),
-            "progress": 0,
-            "status": "No iniciado",
-            "priority": "Media",
-            "rag": "",
-            "milestone": False,
-            "phase": "",
-            "workstream": "",
-            "tags": "",
-            "external_link": ""
-        }])
-        st.session_state["df_full"] = pd.concat([st.session_state["df_full"], new_row], ignore_index=True)
-
-    if c2.button("🗑️ Borrar seleccionadas"):
-        if selected:
-            sel_ids = [r.get("id") for r in selected if r.get("id") is not None]
-            if sel_ids:
-                main.delete_tasks(sel_ids)  # DB
-                st.session_state["df_full"] = st.session_state["df_full"][~st.session_state["df_full"]["id"].isin(sel_ids)]
-            else:
-                st.warning("Las filas seleccionadas no tienen ID aún. Guardá primero y volvé a intentar.")
-        else:
-            st.warning("No hay filas seleccionadas.")
-
-    if c3.button("💾 Guardar (upsert)"):
-        main.upsert_tasks(st.session_state["df_full"])
+with col1:
+    if st.button("💾 Guardar (upsert)"):
+        # quitar col auxiliar y normalizar
+        to_save = edited.drop(columns=["BORRAR"], errors="ignore")
+        to_save = main.ensure_schema(to_save)
+        main.upsert_tasks(to_save)
         st.success("Cambios guardados en Supabase.")
-        st.session_state["df_full"] = main.fetch_tasks()
+        st.session_state.df = main.fetch_tasks()
 
-    if c4.button("🔄 Recargar desde Supabase"):
-        st.session_state["df_full"] = main.fetch_tasks()
+with col2:
+    if st.button("🗑️ Borrar marcadas"):
+        ids = edited.loc[edited["BORRAR"] == True, "id"].dropna().astype(int).tolist()
+        if ids:
+            main.delete_tasks(ids)
+            st.success(f"Eliminadas {len(ids)} fila(s).")
+            st.session_state.df = main.fetch_tasks()
+        else:
+            st.warning("No hay filas con ID marcadas para borrar.")
+
+with col3:
+    if st.button("🔄 Recargar desde Supabase"):
+        st.session_state.df = main.fetch_tasks()
         st.info("Datos recargados.")
 
-# ----- Filtros -----
+st.divider()
+
+# ---------- Filtros de vista ----------
 st.sidebar.title("🔎 Filtros")
-df_view = st.session_state["df_full"].copy()
+df_view = st.session_state.df.copy()
+
 projects = st.sidebar.multiselect("Proyecto", sorted(df_view["project_name"].dropna().unique().tolist()))
 statuses = st.sidebar.multiselect("Estado", main.ENUM_STATUS)
 priorities = st.sidebar.multiselect("Prioridad", main.ENUM_PRIORITY)
@@ -128,55 +104,20 @@ if start_after is not None:
 if end_before is not None:
     df_view = df_view[(df_view["start"].isna()) | (df_view["start"] <= end_before)]
 
-# ----- Vistas -----
-tab_gantt, tab_table, tab_cal = st.tabs(["📈 Gantt", "📋 Tabla", "📅 Calendario"])
+# ---------- Gantt ----------
+st.subheader("📈 Gantt")
+color_by = st.selectbox("Color por", ["progress","status","priority","project_name","rag"], index=0)
+group_by_project = st.checkbox("Agrupar por proyecto (eje Y)", value=True)
+fig = main.make_gantt(df_view, color_by=color_by, group_by_project=group_by_project)
+st.plotly_chart(fig, use_container_width=True)
 
-with tab_gantt:
-    color_by = st.selectbox("Color por", ["progress","status","priority","project_name","rag"], index=0)
-    group_by_project = st.checkbox("Agrupar por proyecto (eje Y)", value=True)
-    fig = main.make_gantt(df_view, color_by=color_by, group_by_project=group_by_project)
-    st.plotly_chart(fig, use_container_width=True)
+# ---------- Tabla simple ----------
+st.subheader("📋 Tabla (vista filtrada)")
+st.dataframe(df_view, use_container_width=True)
 
-with tab_table:
-    st.dataframe(df_view, use_container_width=True)
-
-with tab_cal:
-    from datetime import timedelta
-    today = pd.Timestamp.today()
-    month = st.date_input("Mes", value=today.date().replace(day=1))
-    if isinstance(month, tuple): month = month[0]
-    month_start = pd.Timestamp(month).replace(day=1)
-    month_end   = month_start + pd.offsets.MonthEnd(1)
-
-    subset = st.session_state["df_full"].copy()
-    subset = subset[
-        (subset["start"].notna()) & (subset["end"].notna()) &
-        (subset["end"] >= month_start) & (subset["start"] <= month_end)
-    ]
-    rows = []
-    for _, r in subset.iterrows():
-        d0, d1 = pd.Timestamp(r["start"]).date(), pd.Timestamp(r["end"]).date()
-        d = d0
-        while d <= d1:
-            if month_start.date() <= d <= month_end.date():
-                rows.append({
-                    "date": d, "project": r["project_name"], "task": r["task"],
-                    "owner": r["owner"], "progress": int(r["progress"]),
-                    "status": r["status"], "rag": r["rag"]
-                })
-            d += timedelta(days=1)
-    cal_df = pd.DataFrame(rows)
-    if cal_df.empty:
-        st.info("No hay tareas en este mes.")
-    else:
-        st.dataframe(cal_df.sort_values(["date","project","task"]), use_container_width=True, height=360)
-
-# ----- Export -----
+# ---------- Export ----------
 st.subheader("📤 Exportar")
-c1, c2 = st.columns(2)
-with c1:
-    csv_bytes = st.session_state["df_full"].to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ CSV (todo)", data=csv_bytes, file_name="gantt_tasks.csv", mime="text/csv")
-with c2:
-    ics_text = main.to_ics(df_view if not df_view.empty else st.session_state["df_full"], cal_name="Proyectos")
-    st.download_button("📅 ICS (vista)", data=ics_text.encode("utf-8"), file_name="gantt_calendar.ics", mime="text/calendar")
+csv_bytes = st.session_state.df.to_csv(index=False).encode("utf-8")
+st.download_button("⬇️ CSV (todo)", data=csv_bytes, file_name="gantt_tasks.csv", mime="text/csv")
+
+st.caption("UI simple y robusta: st.data_editor + Supabase. Si querés, luego reactivamos AgGrid.")

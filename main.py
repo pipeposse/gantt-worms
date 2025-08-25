@@ -9,9 +9,9 @@ import plotly.express as px
 
 TABLE = "tasks"
 
-ENUM_STATUS = ["No iniciado","En progreso","Bloqueado","Completado"]
-ENUM_PRIORITY = ["Baja","Media","Alta","Crítica"]
-ENUM_RAG = ["Verde","Amarillo","Rojo"]
+ENUM_STATUS = ["No iniciado", "En progreso", "Bloqueado", "Completado"]
+ENUM_PRIORITY = ["Baja", "Media", "Alta", "Crítica"]
+ENUM_RAG = ["Verde", "Amarillo", "Rojo"]
 
 FRONT_COLS = [
     "id","project_name","task","details","owner",
@@ -125,39 +125,31 @@ def delete_tasks(ids: list[int]):
     sb = get_sb()
     sb.table(TABLE).delete().in_("id", ids).execute()
 
-# ---------- Gantt & ICS ----------
+# ---------- Gantt ----------
 def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: bool = True):
     if df.empty: return px.line()
     df_plot = df.dropna(subset=["start","end"]).copy()
     df_plot["progress_label"] = df_plot["progress"].astype(int).astype(str) + "%"
-    df_plot["task_label"] = df_plot["task"].str.slice(0,40)
+    df_plot["task_label"] = df_plot["task"].str.slice(0, 40)
     y = "project_name" if group_by_project else "task_label"
     fig = px.timeline(
-        df_plot, x_start="start", x_end="end", y=y, color=color_by,
+        df_plot,
+        x_start="start", x_end="end", y=y, color=color_by,
         hover_data={"task":True,"details":True,"owner":True,"collaborators":True,
                     "status":True,"priority":True,"rag":True,
                     "progress":True,"start":"|%Y-%m-%d","end":"|%Y-%m-%d"},
-        text="progress_label", title="Cronograma de Proyectos (Gantt)"
+        text="progress_label",
+        title="Cronograma de Proyectos (Gantt)"
     )
     fig.update_traces(textposition="inside", insidetextanchor="middle", cliponaxis=False)
     fig.update_yaxes(autorange="reversed")
+    # Fondo transparente para evitar "pantalla negra" con temas oscuros
+    fig.update_layout(
+        bargap=0.2,
+        margin=dict(l=10, r=10, t=60, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
     today = pd.Timestamp.today().normalize()
     fig.add_vline(x=today, line_width=2, line_dash="dash", opacity=0.6)
-    fig.update_layout(bargap=0.2, margin=dict(l=10,r=10,t=60,b=10))
     return fig
-
-def to_ics(df: pd.DataFrame, cal_name: str = "Proyectos"):
-    df = df.dropna(subset=["start","end"]).copy()
-    lines = ["BEGIN:VCALENDAR","VERSION:2.0",f"X-WR-CALNAME:{cal_name}","PRODID:-//Streamlit Gantt//ES"]
-    now = pd.Timestamp.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    for _, row in df.iterrows():
-        uid = f"{row.get('id','x')}@streamlit-gantt"
-        dtstart = pd.Timestamp(row["start"]).strftime("%Y%m%d")
-        dtend = (pd.Timestamp(row["end"]) + pd.Timedelta(days=1)).strftime("%Y%m%d")
-        summary = f"{row['project_name']} – {row['task']} ({int(row['progress'])}%)"
-        desc = f"Owner: {row.get('owner','')}. Estado: {row.get('status','')}."
-        lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{now}",
-                  f"DTSTART;VALUE=DATE:{dtstart}", f"DTEND;VALUE=DATE:{dtend}",
-                  f"SUMMARY:{summary}", f"DESCRIPTION:{desc}", "END:VEVENT"]
-    lines.append("END:VCALENDAR")
-    return "\n".join(lines)

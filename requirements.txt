@@ -1,4 +1,8 @@
 streamlit
 pandas
+numpy
+plotly
 supabase
-plotly==5.22.0
+httpx
+pydantic
+postgrest
