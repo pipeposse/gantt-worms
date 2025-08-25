@@ -3,37 +3,36 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
+import plotly.express as px
 import streamlit as st
-from st_supabase_connection import SupabaseConnection
 
-# ------------ Config general ------------
+import supabase_client as sbc  # <- tu cliente centralizado
+
+# =========================
+# Config
+# =========================
 TABLE = "tasks"
 
-# Columnas esperadas en el front-end (DataFrame) para el editor/Gantt
+# Columnas esperadas en la UI (grid y gráficos)
 FRONT_COLS = [
     "id", "project_name", "task", "details", "owner",
     "collaborators",  # coma-separado en UI; en DB es text[]
     "start", "end",   # mapean a start_date, end_date
     "progress", "status", "priority",
-    "milestone", "rag",
-    # extras útiles del modelo
+    "rag", "milestone",
+    # extras útiles
     "baseline_start", "baseline_end",
     "actual_start", "actual_end",
-    "phase", "workstream", "tags", "external_link"
+    "phase", "workstream", "tags", "external_link",
 ]
 
-ENUM_STATUS = ["No iniciado","En progreso","Bloqueado","Completado"]
-ENUM_PRIORITY = ["Baja","Media","Alta","Crítica"]
-ENUM_RAG = ["Verde","Amarillo","Rojo"]
+ENUM_STATUS   = ["No iniciado", "En progreso", "Bloqueado", "Completado"]
+ENUM_PRIORITY = ["Baja", "Media", "Alta", "Crítica"]
+ENUM_RAG      = ["Verde", "Amarillo", "Rojo"]
 
-# ------------ Conexión Supabase ------------
-def sb_conn():
-    """
-    Devuelve una conexión 'st.connection' ya configurada con secrets.toml.
-    """
-    return st.connection("supabase", type=SupabaseConnection)
-
-# ------------ Utilidades de fechas ------------
+# =========================
+# Utilidades
+# =========================
 def _coerce_date(x):
     if x in (None, "", pd.NaT):
         return None
@@ -44,7 +43,6 @@ def _coerce_date(x):
             return datetime.strptime(str(x), fmt).date()
         except Exception:
             pass
-    # último intento
     try:
         return pd.to_datetime(x).date()
     except Exception:
@@ -55,7 +53,6 @@ def _to_list_from_csv(s):
         return None
     if isinstance(s, list):
         return s
-    # "a, b, c" -> ["a","b","c"]
     parts = [p.strip() for p in str(s).split(",") if str(p).strip() != ""]
     return parts if parts else None
 
@@ -66,15 +63,17 @@ def _to_csv_from_list(lst):
         return ", ".join([str(x) for x in lst])
     return str(lst)
 
-# ------------ Transformaciones DF <-> DB ------------
+# =========================
+# Transformaciones DF <-> DB
+# =========================
 def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in FRONT_COLS:
         if col not in df.columns:
             df[col] = pd.NA
 
-    # tipos
     df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
+
     for c in ["project_name","task","details","owner","status","priority","rag",
               "phase","workstream","tags","external_link","collaborators"]:
         df[c] = df[c].astype(str).replace({"<NA>": ""})
@@ -84,31 +83,26 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     df["progress"] = pd.to_numeric(df["progress"], errors="coerce").fillna(0).astype(int).clip(0,100)
     df["milestone"] = df["milestone"].astype(str).str.lower().isin(["true","1","t","y","yes"])
-    # normalizar enums si vienen vacíos
+
+    # normalizar enums si están fuera de rango
     df.loc[~df["status"].isin(ENUM_STATUS), "status"] = "No iniciado"
     df.loc[~df["priority"].isin(ENUM_PRIORITY), "priority"] = "Media"
-    df.loc[~df["rag"].isin(ENUM_RAG), "rag"] = pd.NA
+    df.loc[~df["rag"].isin(ENUM_RAG), "rag"] = ""
     return df[FRONT_COLS]
 
 def df_from_supabase(rows: list[dict]) -> pd.DataFrame:
     if not rows:
         return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
-    df = pd.DataFrame(rows)
 
-    # renombres de fechas
-    rename_map = {
-        "start_date": "start",
-        "end_date": "end",
-    }
-    df = df.rename(columns=rename_map)
+    df = pd.DataFrame(rows).copy()
+    df = df.rename(columns={"start_date": "start", "end_date": "end"})
 
-    # arrays -> UI cadena
+    # arrays -> cadena amigable
     if "collaborators" in df.columns:
         df["collaborators"] = df["collaborators"].apply(_to_csv_from_list)
     if "tags" in df.columns:
-        df["tags"] = _to_csv_from_list(df["tags"]) if not isinstance(df["tags"], pd.Series) else df["tags"].apply(_to_csv_from_list)
+        df["tags"] = df["tags"].apply(_to_csv_from_list)
 
-    # asegurar columnas UI
     df = ensure_schema(df)
     return df
 
@@ -128,8 +122,8 @@ def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
             "progress": int(r["progress"]) if not pd.isna(r["progress"]) else 0,
             "status": (r["status"] or "No iniciado"),
             "priority": (r["priority"] or "Media"),
-            "milestone": bool(r["milestone"]),
             "rag": (r["rag"] if r["rag"] in ENUM_RAG else None),
+            "milestone": bool(r["milestone"]),
             "baseline_start": _coerce_date(r["baseline_start"]),
             "baseline_end": _coerce_date(r["baseline_end"]),
             "actual_start": _coerce_date(r["actual_start"]),
@@ -142,42 +136,62 @@ def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
         out.append(item)
     return out
 
-# ------------ CRUD ------------
+# =========================
+# CRUD vía supabase_client
+# =========================
 def fetch_tasks() -> pd.DataFrame:
-    sb = sb_conn()
-    rows = sb.table(TABLE).select("*").order("project_name", desc=False).order("start_date", desc=False).execute().data
+    rows = sbc.fetch_all()
     return df_from_supabase(rows)
 
 def upsert_tasks(df: pd.DataFrame):
-    sb = sb_conn()
     payload = payload_for_upsert(df)
     if payload:
-        sb.table(TABLE).upsert(payload, on_conflict="id").execute()
+        sbc.upsert_rows(payload)
 
 def delete_tasks(ids: list[int]):
-    if not ids:
-        return
-    sb = sb_conn()
-    sb.table(TABLE).delete().in_("id", ids).execute()
+    if ids:
+        sbc.delete_by_ids(ids)
 
-# ------------ Plotly Gantt & ICS ------------
-import plotly.express as px
+# =========================
+# UX: Métricas y Gantt
+# =========================
+def kpi_counts(df: pd.DataFrame):
+    total = len(df)
+    in_prog = (df["status"] == "En progreso").sum()
+    done = (df["status"] == "Completado").sum()
+    overdue = 0
+    today = pd.Timestamp.today().normalize()
+    mask_overdue = (df["end"].notna() & (df["end"] < today) & (df["progress"] < 100))
+    overdue = mask_overdue.sum()
+    return total, in_prog, done, overdue
 
 def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: bool = True):
     if df.empty:
         return px.line()
     df_plot = df.dropna(subset=["start","end"]).copy()
+    if df_plot.empty:
+        return px.line()
     df_plot["progress_label"] = df_plot["progress"].astype(int).astype(str) + "%"
     df_plot["task_label"] = df_plot["task"].str.slice(0, 40)
     y = "project_name" if group_by_project else "task_label"
     fig = px.timeline(
         df_plot,
-        x_start="start", x_end="end", y=y,
+        x_start="start",
+        x_end="end",
+        y=y,
         color=color_by,
         hover_data={
-            "task": True, "details": True, "owner": True, "collaborators": True,
-            "status": True, "priority": True, "rag": True,
-            "progress": True, "start": "|%Y-%m-%d", "end": "|%Y-%m-%d",
+            "task": True,
+            "details": True,
+            "owner": True,
+            "collaborators": True,
+            "status": True,
+            "priority": True,
+            "rag": True,
+            "progress": True,
+            "start": "|%Y-%m-%d",
+            "end": "|%Y-%m-%d",
+            "external_link": True,
         },
         text="progress_label",
         title="Cronograma de Proyectos (Gantt)",
@@ -186,7 +200,11 @@ def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: b
     fig.update_yaxes(autorange="reversed")
     today = pd.Timestamp.today().normalize()
     fig.add_vline(x=today, line_width=2, line_dash="dash", opacity=0.6)
-    fig.update_layout(bargap=0.2, margin=dict(l=10, r=10, t=60, b=10))
+    fig.update_layout(
+        bargap=0.25,
+        margin=dict(l=10, r=10, t=60, b=10),
+        legend_title_text=color_by.capitalize(),
+    )
     return fig
 
 def to_ics(df: pd.DataFrame, cal_name: str = "Proyectos"):
