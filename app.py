@@ -9,7 +9,7 @@ st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_
 if "df" not in st.session_state:
     st.session_state.df = main.fetch_tasks()
 
-st.title("🚀 Gantt de Proyectos (Streamlit + Supabase)")
+st.title("🚀 Gantt de Proyectos (Worms)")
 st.caption("Edición nativa con `st.data_editor`. Guardá con 💾 y recargá desde Supabase cuando quieras.")
 
 # ---------- Editor (nativo) ----------

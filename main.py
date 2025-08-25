@@ -26,15 +26,7 @@ def get_client_or_none():
 
 
 
-
-
-
-
-
 TABLE = "tasks"
-
-
-
 
 
 
@@ -70,36 +62,89 @@ def _coerce_date(x):
     except: return None
 
 def _to_list_from_csv(s):
-    if s in (None,"",pd.NA,np.nan): return None
-    if isinstance(s, list): return s
-    parts = [p.strip() for p in str(s).split(",") if str(p).strip()!=""]
-    return parts if parts else None
+    """
+    Convierte "a, b, c" -> ["a","b","c"].
+    Soporta None, pd.NA, np.nan y listas ya formateadas.
+    """
+    # nulos
+    try:
+        if s is None or pd.isna(s):
+            return None
+    except Exception:
+        if s is None:
+            return None
+    # ya es lista
+    if isinstance(s, list):
+        return [str(x).strip() for x in s if str(x).strip() != ""]
+    # string
+    s = str(s).strip()
+    if s == "" or s.lower() in ("nan", "none", "<na>"):
+        return None
+    return [p.strip() for p in s.split(",") if p.strip() != ""]
+
 
 def _to_csv_from_list(lst):
-    if lst in (None,pd.NA,np.nan): return ""
-    if isinstance(lst, list): return ", ".join(str(x) for x in lst)
-    return str(lst)
+    """
+    Convierte lista -> "a, b, c" para mostrar en la UI.
+    Maneja None, pd.NA, np.nan y strings ya planas.
+    """
+    try:
+        if lst is None or pd.isna(lst):
+            return ""
+    except Exception:
+        if lst is None:
+            return ""
+    if isinstance(lst, list):
+        return ", ".join(str(x) for x in lst if str(x).strip() != "")
+    s = str(lst).strip()
+    return "" if s.lower() in ("nan", "none", "<na>") else s
+
 
 # ---------- schema ----------
 def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    FRONT_COLS = [
+        "id","project_name","task","details","owner",
+        "collaborators","start","end","progress",
+        "status","priority","rag","milestone",
+        "baseline_start","baseline_end","actual_start","actual_end",
+        "phase","workstream","tags","external_link"
+    ]
     for c in FRONT_COLS:
-        if c not in df.columns: df[c] = pd.NA
+        if c not in df.columns:
+            df[c] = pd.NA
 
+    # tipos base
     df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
-    for c in ["project_name","task","details","owner","status","priority","rag",
-              "phase","workstream","tags","external_link","collaborators"]:
-        df[c] = df[c].astype(str).replace({"<NA>": ""})
 
+    # NO casteamos a str (para no introducir 'nan'): dejamos objeto y limpiamos NA
+    text_like = ["project_name","task","details","owner","status","priority","rag",
+                 "phase","workstream","tags","external_link","collaborators"]
+    for c in text_like:
+        # reemplazar NA por None (más fácil de tratar luego)
+        df[c] = df[c].astype("object")
+        df[c] = df[c].where(~pd.isna(df[c]), None)
+
+    # fechas
     for c in ["start","end","baseline_start","baseline_end","actual_start","actual_end"]:
         df[c] = pd.to_datetime(df[c], errors="coerce")
-    df["progress"] = pd.to_numeric(df["progress"], errors="coerce").fillna(0).astype(int).clip(0,100)
-    df["milestone"] = df["milestone"].astype(str).str.lower().isin(["true","1","t","y","yes"])
+
+    # numéricos / booleanos
+    df["progress"] = pd.to_numeric(df["progress"], errors="coerce").fillna(0).astype(int).clip(0, 100)
+    df["milestone"] = df["milestone"].apply(lambda v: bool(v) if not pd.isna(v) else False)
+
+    # enums (si vienen vacíos)
+    ENUM_STATUS = ["No iniciado","En progreso","Bloqueado","Completado"]
+    ENUM_PRIORITY = ["Baja","Media","Alta","Crítica"]
+    ENUM_RAG = ["Verde","Amarillo","Rojo"]
 
     df.loc[~df["status"].isin(ENUM_STATUS), "status"] = "No iniciado"
     df.loc[~df["priority"].isin(ENUM_PRIORITY), "priority"] = "Media"
-    df.loc[~df["rag"].isin(ENUM_RAG), "rag"] = pd.NA
+    # rag puede ser None / vacío; solo normalizamos si trae otro texto
+    df.loc[~df["rag"].isin(ENUM_RAG) & ~df["rag"].isna(), "rag"] = None
+
     return df[FRONT_COLS]
+
 
 def df_from_supabase(rows: list[dict]) -> pd.DataFrame:
     if not rows: return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
