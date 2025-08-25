@@ -7,7 +7,38 @@ import streamlit as st
 from supabase import create_client, Client
 import plotly.express as px
 
+# main.py (al tope)
+import os, streamlit as st
+from supabase import create_client
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY")
+
+def get_client_or_none():
+    try:
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            return None
+        return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    except Exception:
+        return None
+
+
+
+
+
+
+
+
+
+
 TABLE = "tasks"
+
+
+
+
+
+
+
 
 ENUM_STATUS = ["No iniciado", "En progreso", "Bloqueado", "Completado"]
 ENUM_PRIORITY = ["Baja", "Media", "Alta", "Crítica"]
