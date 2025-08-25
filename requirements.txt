@@ -5,3 +5,6 @@ plotly>=5.22
 streamlit-aggrid==0.3.4.post3
 supabasestreamlit-aggrid
 supabase==2.4.0
+gotrue
+postgrest
+supabase-py
