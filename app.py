@@ -5,7 +5,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import main
 import supabase_client as sbc
 
-st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Gantt Proyectos Pipeta (Supabase)", layout="wide", page_icon="📊")
 
 st.title("🚀 Dashboard Proyectos (Supabase)")
 st.caption("Conexión directa a la tabla `tasks` en Supabase.")
