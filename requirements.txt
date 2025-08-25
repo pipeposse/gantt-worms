@@ -3,3 +3,4 @@ pandas>=2.0.0
 numpy>=1.23
 plotly>=5.22
 streamlit-aggrid==0.3.4.post3
+supabase
