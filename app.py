@@ -1,235 +1,134 @@
 # app.py
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import main
+import supabase_client as sbc
 
 st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_icon="📊")
 
-# =========================
-# Estilos
-# =========================
-st.markdown("""
-<style>
-.block-container {padding-top: 1.1rem; padding-bottom: 2rem;}
-.action-bar .stButton>button {border-radius: 10px; padding: 0.45rem 0.9rem;}
-.kpi {padding: 0.9rem; border-radius: 12px; background: #f8f9fb; border: 1px solid #eef1f5;}
-.kpi h3 {margin: 0; font-size: 0.95rem; color: #6b7280;}
-.kpi .num {font-size: 1.6rem; font-weight: 700; margin-top: 0.25rem;}
-</style>
-""", unsafe_allow_html=True)
+st.title("🚀 Dashboard Proyectos (Supabase)")
+st.caption("Conexión directa a la tabla `tasks` en Supabase.")
 
 # =========================
-# Carga inicial (Supabase)
+# 1. Estado de conexión
 # =========================
-if "df_full" not in st.session_state:
-    st.session_state["df_full"] = main.fetch_tasks()
+ok, data = main.check_connection()
+if ok:
+    st.success("✅ Conectado correctamente a Supabase")
+    df_full = main.df_from_supabase(data)
+else:
+    st.error("❌ Error al conectar con Supabase")
+    st.stop()
 
-st.title("🚀 Gantt de Proyectos")
-st.caption("Edición directa, filtros rápidos y vista Gantt con línea de hoy. Persistencia en Supabase (PostgreSQL).")
+# =========================
+# 2. Vista tabla cruda
+# =========================
+st.subheader("📋 Tabla `tasks` desde Supabase")
+st.dataframe(df_full, use_container_width=True, height=350)
 
 # KPIs
-total, in_prog, done, overdue = main.kpi_counts(st.session_state["df_full"])
+total, in_prog, done, overdue = main.kpi_counts(df_full)
 c1, c2, c3, c4 = st.columns(4)
-with c1: st.markdown(f'<div class="kpi"><h3>Total tareas</h3><div class="num">{total}</div></div>', unsafe_allow_html=True)
-with c2: st.markdown(f'<div class="kpi"><h3>En progreso</h3><div class="num">{in_prog}</div></div>', unsafe_allow_html=True)
-with c3: st.markdown(f'<div class="kpi"><h3>Completadas</h3><div class="num">{done}</div></div>', unsafe_allow_html=True)
-with c4: st.markdown(f'<div class="kpi"><h3>Vencidas</h3><div class="num">{overdue}</div></div>', unsafe_allow_html=True)
+c1.metric("Total tareas", total)
+c2.metric("En progreso", in_prog)
+c3.metric("Completadas", done)
+c4.metric("Vencidas", overdue)
 
 st.markdown("---")
 
 # =========================
-# Editor (CRUD)
+# 3. Formulario para crear tareas
+# =========================
+st.subheader("🆕 Crear nueva tarea")
+with st.form("new_task_form", clear_on_submit=True):
+    col1, col2 = st.columns(2)
+    project_name = col1.text_input("Proyecto *")
+    task = col2.text_input("Tarea *")
+    details = st.text_area("Detalles")
+    owner = st.text_input("Owner")
+    collaborators = st.text_input("Colaboradores (coma-separados)")
+    col3, col4 = st.columns(2)
+    start_date = col3.date_input("Fecha inicio", pd.Timestamp.today())
+    end_date = col4.date_input("Fecha fin", pd.Timestamp.today() + pd.Timedelta(days=7))
+    progress = st.slider("Progreso (%)", 0, 100, 0)
+    col5, col6, col7 = st.columns(3)
+    status = col5.selectbox("Estado", main.ENUM_STATUS, index=0)
+    priority = col6.selectbox("Prioridad", main.ENUM_PRIORITY, index=1)
+    rag = col7.selectbox("RAG", [""] + main.ENUM_RAG, index=0)
+
+    submitted = st.form_submit_button("➕ Agregar")
+    if submitted:
+        new_row = {
+            "project_name": project_name,
+            "task": task,
+            "details": details,
+            "owner": owner,
+            "collaborators": [c.strip() for c in collaborators.split(",")] if collaborators else None,
+            "start_date": pd.to_datetime(start_date).date(),
+            "end_date": pd.to_datetime(end_date).date(),
+            "progress": progress,
+            "status": status,
+            "priority": priority,
+            "rag": rag if rag else None,
+        }
+        sbc.insert_rows([new_row])
+        st.success(f"Tarea '{task}' agregada a Supabase.")
+
+st.markdown("---")
+
+# =========================
+# 4. Editor interactivo (CRUD)
 # =========================
 st.subheader("✏️ Editor de tareas")
-with st.expander("Abrir editor", expanded=True):
-    df = st.session_state["df_full"]
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(resizable=True, filter=True, sortable=True, editable=True)
 
-    gb.configure_column("id", type=["numericColumn"], editable=False)
-    gb.configure_column("project_name", header_name="Proyecto")
-    gb.configure_column("task", header_name="Tarea")
-    gb.configure_column("details", header_name="Detalles", flex=2)
-    gb.configure_column("owner", header_name="Owner")
-    gb.configure_column("collaborators", header_name="Colaboradores (coma-separados)")
-    gb.configure_column("start", header_name="Inicio", type=["dateColumn"],
-                        valueFormatter="value && new Date(value).toISOString().slice(0,10)")
-    gb.configure_column("end", header_name="Fin", type=["dateColumn"],
-                        valueFormatter="value && new Date(value).toISOString().slice(0,10)")
-    gb.configure_column("progress", header_name="Progreso (%)", type=["numericColumn"], minWidth=130)
+gb = GridOptionsBuilder.from_dataframe(df_full)
+gb.configure_default_column(resizable=True, filter=True, sortable=True, editable=True)
 
-    gb.configure_column("status", header_name="Estado",
-                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_STATUS})
-    gb.configure_column("priority", header_name="Prioridad",
-                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_PRIORITY})
-    gb.configure_column("rag", header_name="RAG",
-                        cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_RAG})
-    gb.configure_column("milestone", header_name="Milestone")
+gb.configure_column("status", cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_STATUS})
+gb.configure_column("priority", cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_PRIORITY})
+gb.configure_column("rag", cellEditor="agSelectCellEditor", cellEditorParams={"values": main.ENUM_RAG})
 
-    gb.configure_column("phase", header_name="Fase")
-    gb.configure_column("workstream", header_name="Workstream")
-    gb.configure_column("tags", header_name="Tags (coma-separados)")
-    gb.configure_column("external_link", header_name="Link externo", flex=1)
+gb.configure_selection("multiple", use_checkbox=True)
+grid = AgGrid(
+    df_full,
+    gridOptions=gb.build(),
+    theme="alpine",
+    update_mode=GridUpdateMode.MODEL_CHANGED,
+    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+    fit_columns_on_grid_load=True,
+    height=420,
+)
 
-    gb.configure_selection("multiple", use_checkbox=True)
+edited_df = pd.DataFrame(grid["data"])
+selected = grid["selected_rows"]
 
-    grid = AgGrid(
-        df,
-        gridOptions=gb.build(),
-        theme="alpine",
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-        fit_columns_on_grid_load=True,
-        allow_unsafe_jscode=True,
-        height=420,
-    )
-
-    edited_df = pd.DataFrame(grid["data"])
-    selected = grid["selected_rows"]
-
-    edited_df = main.ensure_schema(edited_df)
-    st.session_state["df_full"] = edited_df
-
-    st.markdown('<div class="action-bar">', unsafe_allow_html=True)
-    a1, a2, a3, a4 = st.columns([1,1,1,2])
-
-    with a1:
-        if st.button("➕ Agregar tarea"):
-            new = pd.DataFrame([{
-                "id": None,
-                "project_name": "Nuevo Proyecto",
-                "task": "Nueva tarea",
-                "details": "",
-                "owner": "",
-                "collaborators": "",
-                "start": pd.Timestamp.today(),
-                "end": pd.Timestamp.today() + pd.Timedelta(days=7),
-                "progress": 0,
-                "status": "No iniciado",
-                "priority": "Media",
-                "rag": "",
-                "milestone": False,
-                "phase": "",
-                "workstream": "",
-                "tags": "",
-                "external_link": ""
-            }])
-            st.session_state["df_full"] = pd.concat([st.session_state["df_full"], new], ignore_index=True)
-            st.toast("Fila agregada. Guardá con 💾.")
-
-    with a2:
-        if st.button("🗑️ Borrar seleccionadas"):
-            if selected:
-                sel_ids = [r.get("id") for r in selected if r.get("id") is not None]
-                if sel_ids:
-                    main.delete_tasks(sel_ids)  # DELETE en Supabase
-                    st.session_state["df_full"] = st.session_state["df_full"][~st.session_state["df_full"]["id"].isin(sel_ids)]
-                    st.success("Eliminadas en Supabase.")
-                else:
-                    # filas nuevas sin ID -> borralas localmente
-                    tmp = pd.DataFrame(selected)
-                    st.session_state["df_full"] = st.session_state["df_full"].drop(index=tmp.index, errors="ignore")
-                    st.info("Filas locales sin ID eliminadas.")
-            else:
-                st.warning("No hay filas seleccionadas.")
-
-    with a3:
-        if st.button("💾 Guardar (upsert)"):
-            main.upsert_tasks(st.session_state["df_full"])  # UPSERT en Supabase
-            st.success("Cambios guardados en Supabase.")
-            st.session_state["df_full"] = main.fetch_tasks()  # refrescar (IDs autogenerados)
-
-    with a4:
-        if st.button("🔄 Recargar"):
-            st.session_state["df_full"] = main.fetch_tasks()
-            st.info("Datos recargados.")
-    st.markdown('</div>', unsafe_allow_html=True)
+c1, c2, c3 = st.columns(3)
+with c1:
+    if st.button("💾 Guardar cambios (upsert)"):
+        payload = main.payload_for_upsert(edited_df)
+        sbc.upsert_rows(payload)
+        st.success("Cambios guardados en Supabase.")
+with c2:
+    if st.button("🗑️ Eliminar seleccionadas"):
+        if selected:
+            ids = [r["id"] for r in selected if "id" in r]
+            sbc.delete_by_ids(ids)
+            st.success(f"Eliminadas {len(ids)} filas.")
+        else:
+            st.warning("Seleccioná filas para borrar.")
+with c3:
+    if st.button("🔄 Recargar"):
+        _, data = main.check_connection()
+        st.session_state["df_full"] = main.df_from_supabase(data)
+        st.experimental_rerun()
 
 st.markdown("---")
 
 # =========================
-# Filtros de vista
+# 5. Vista Gantt
 # =========================
-st.sidebar.title("🔎 Filtros")
-df_view = st.session_state["df_full"].copy()
-
-projects = st.sidebar.multiselect("Proyecto", sorted(df_view["project_name"].dropna().unique().tolist()))
-statuses = st.sidebar.multiselect("Estado", main.ENUM_STATUS)
-priorities = st.sidebar.multiselect("Prioridad", main.ENUM_PRIORITY)
-rag_filter = st.sidebar.multiselect("RAG", main.ENUM_RAG)
-owner = st.sidebar.text_input("Owner contiene…")
-date_range = st.sidebar.date_input("Rango de fechas", value=None)
-
-if projects:   df_view = df_view[df_view["project_name"].isin(projects)]
-if statuses:   df_view = df_view[df_view["status"].isin(statuses)]
-if priorities: df_view = df_view[df_view["priority"].isin(priorities)]
-if rag_filter: df_view = df_view[df_view["rag"].isin(rag_filter)]
-if owner:      df_view = df_view[df_view["owner"].str.contains(owner, case=False, na=False)]
-
-start_after = pd.to_datetime(date_range[0]) if isinstance(date_range, tuple) and date_range[0] else None
-end_before  = pd.to_datetime(date_range[1]) if isinstance(date_range, tuple) and date_range[1] else None
-if start_after is not None:
-    df_view = df_view[(df_view["end"].isna()) | (df_view["end"] >= start_after)]
-if end_before is not None:
-    df_view = df_view[(df_view["start"].isna()) | (df_view["start"] <= end_before)]
-
-# =========================
-# Tabs
-# =========================
-tab_gantt, tab_table, tab_cal = st.tabs(["📈 Gantt", "📋 Tabla", "📅 Calendario"])
-
-with tab_gantt:
-    color_by = st.selectbox("Color por", ["progress", "status", "priority", "project_name", "rag"], index=0)
-    group_by_project = st.checkbox("Agrupar por proyecto (eje Y)", value=True)
-    fig = main.make_gantt(df_view, color_by=color_by, group_by_project=group_by_project)
-    st.plotly_chart(fig, use_container_width=True)
-
-with tab_table:
-    st.dataframe(df_view, use_container_width=True, height=420)
-
-with tab_cal:
-    st.write("Calendario mensual (vista filtrada).")
-    today = pd.Timestamp.today()
-    month = st.date_input("Mes", value=today.date().replace(day=1))
-    if isinstance(month, tuple): month = month[0]
-    month_start = pd.Timestamp(month).replace(day=1)
-    month_end = month_start + pd.offsets.MonthEnd(1)
-
-    subset = st.session_state["df_full"].copy()
-    subset = subset[
-        (subset["start"].notna()) & (subset["end"].notna()) &
-        (subset["end"] >= month_start) & (subset["start"] <= month_end)
-    ]
-    rows = []
-    for _, r in subset.iterrows():
-        d0, d1 = pd.Timestamp(r["start"]).date(), pd.Timestamp(r["end"]).date()
-        d = d0
-        while d <= d1:
-            if month_start.date() <= d <= month_end.date():
-                rows.append({
-                    "date": d, "project": r["project_name"], "task": r["task"],
-                    "owner": r["owner"], "progress": int(r["progress"]),
-                    "status": r["status"], "rag": r["rag"]
-                })
-            d += timedelta(days=1)
-    cal_df = pd.DataFrame(rows)
-    if cal_df.empty:
-        st.info("No hay tareas en este mes.")
-    else:
-        st.dataframe(cal_df.sort_values(["date","project","task"]), use_container_width=True, height=360)
-
-# =========================
-# Export
-# =========================
-st.subheader("📤 Exportar")
-c1, c2 = st.columns(2)
-with c1:
-    csv_bytes = st.session_state["df_full"].to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ CSV (todo)", data=csv_bytes, file_name="gantt_tasks.csv", mime="text/csv")
-with c2:
-    ics_text = main.to_ics(df_view if not df_view.empty else st.session_state["df_full"], cal_name="Proyectos")
-    st.download_button("📅 ICS (vista)", data=ics_text.encode("utf-8"), file_name="gantt_calendar.ics", mime="text/calendar")
-
-st.caption("CRUD completo sobre Supabase. Sin archivos locales.")
+st.subheader("📈 Vista Gantt")
+fig = main.make_gantt(edited_df)
+st.plotly_chart(fig, use_container_width=True)
+    
