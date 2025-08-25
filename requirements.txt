@@ -4,3 +4,7 @@ numpy==1.26.4
 plotly==5.19.0
 streamlit-aggrid==0.3.4.post3
 supabase-py==2.4.0
+gotrue==2.4.0
+postgrest==0.15.0
+realtime==1.0.2
+storage3==0.7.0
