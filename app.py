@@ -59,9 +59,14 @@ with col1:
         # quitar col auxiliar y normalizar
         to_save = edited.drop(columns=["BORRAR"], errors="ignore")
         to_save = main.ensure_schema(to_save)
-        main.upsert_tasks(to_save)
-        st.success("Cambios guardados en Supabase.")
-        st.session_state.df = main.fetch_tasks()
+        ok = main.upsert_tasks(st.session_state["df"])
+if ok:
+    st.success("Cambios guardados en Supabase.")
+    st.session_state["df"] = main.fetch_tasks()
+        
+       
+
+        
 
 with col2:
     if st.button("🗑️ Borrar marcadas"):

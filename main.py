@@ -10,8 +10,8 @@ import streamlit as st
 from supabase import create_client, Client
 import plotly.express as px
 
-# Si en tu DB collaborators/tags son TEXT[], poné True. Si son TEXT, dejá False.
-DB_ARRAY_COLS = False
+# >>> Poné True si en tu DB collaborators/tags son text[] (arrays); False si son TEXT simple
+DB_ARRAY_COLS = True
 
 TABLE = "tasks"
 
@@ -83,6 +83,7 @@ def _date_to_str(d: Any) -> Optional[str]:
     return s if s else None
 
 def _to_list_from_csv(s: Any) -> Optional[List[str]]:
+    # None / NA
     if s is None:
         return None
     try:
@@ -90,8 +91,10 @@ def _to_list_from_csv(s: Any) -> Optional[List[str]]:
             return None
     except Exception:
         pass
+    # Lista ya válida
     if isinstance(s, list):
         return [str(x).strip() for x in s if str(x).strip() != ""]
+    # Cadena "a, b"
     s_str = str(s).strip()
     if s_str == "" or s_str.lower() in ("nan", "none", "<na>"):
         return None
@@ -179,6 +182,10 @@ def df_from_supabase(rows: List[Dict[str, Any]]) -> pd.DataFrame:
             df["tags"] = _to_csv_from_list(df["tags"])
     return ensure_schema(df)
 
+def _array_or_text(value: Any, for_array: bool) -> Any:
+    """Devuelve list[str] si for_array=True; si no, string CSV."""
+    return (_to_list_from_csv(value) if for_array else _to_csv_from_list(value))
+
 def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
     df = ensure_schema(df)
     out: List[Dict[str, Any]] = []
@@ -189,10 +196,7 @@ def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
             "task": (r["task"] or "").strip(),
             "details": (r["details"] or None),
             "owner": (r["owner"] or None),
-            # 👇 según tipo de columna en DB
-            "collaborators": (
-                _to_list_from_csv(r["collaborators"]) if DB_ARRAY_COLS else _to_csv_from_list(r["collaborators"])
-            ),
+            "collaborators": _to_list_from_csv(r["collaborators"]),
             "start_date": _date_to_str(_coerce_date(r["start"])),
             "end_date": _date_to_str(_coerce_date(r["end"])),
             "progress": _to_int(r["progress"]) or 0,
@@ -206,13 +210,49 @@ def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
             "actual_end": _date_to_str(_coerce_date(r["actual_end"])),
             "phase": (r["phase"] or None),
             "workstream": (r["workstream"] or None),
-            "tags": (
-                _to_list_from_csv(r["tags"]) if DB_ARRAY_COLS else _to_csv_from_list(r["tags"])
-            ),
+            "tags": _to_list_from_csv(r["tags"]),
             "external_link": (r["external_link"] or None),
         }
+        # Si estamos mandando arrays, aseguramos list real (no string accidental)
+        if DB_ARRAY_COLS:
+            for k in ("collaborators", "tags"):
+                v = item[k]
+                if isinstance(v, str):
+                    item[k] = _to_list_from_csv(v)
         out.append(item)
     return out
+
+
+# Nuevo esquema forzado
+def upsert_tasks(df: pd.DataFrame) -> bool:
+    sb = get_sb()
+    if sb is None:
+        st.warning("Sin conexión a Supabase: cambios NO persistidos (demo).")
+        return False
+    payload = payload_for_upsert(df)
+    if not payload:
+        return True
+    try:
+        sb.table(TABLE).upsert(payload, on_conflict="id").execute()
+        return True
+    except Exception as e:
+        # Muestra detalle sin romper la app
+        st.error("❌ Error de Supabase al guardar")
+        try:
+            from postgrest.exceptions import APIError  # type: ignore
+            if isinstance(e, APIError):
+                st.code({
+                    "code": getattr(e, "code", None),
+                    "message": getattr(e, "message", None),
+                    "details": getattr(e, "details", None),
+                    "hint": getattr(e, "hint", None),
+                    "payload_sample": payload[:1],
+                })
+        except Exception:
+            st.write(e)
+        return False
+
+
 
 # ----------------- CRUD -----------------
 def fetch_tasks() -> pd.DataFrame:
@@ -226,40 +266,45 @@ def fetch_tasks() -> pd.DataFrame:
     res = sb.table(TABLE).select("*").order("project_name").order("start_date").execute()
     return df_from_supabase(res.data or [])
 
-# APIError puede no estar disponible si cambia el paquete; definimos fallback.
+# APIError para mostrar detalle sin romper
 try:
     from postgrest.exceptions import APIError  # type: ignore
 except Exception:  # pragma: no cover
     class APIError(Exception):
         pass
 
-def upsert_tasks(df: pd.DataFrame) -> None:
+def upsert_tasks(df: pd.DataFrame) -> bool:
     sb = get_sb()
     if sb is None:
         st.warning("Sin conexión a Supabase: cambios NO persistidos (demo).")
-        return
+        return False
     payload = payload_for_upsert(df)
     if not payload:
-        return
+        return True
     try:
         sb.table(TABLE).upsert(payload, on_conflict="id").execute()
+        return True
     except APIError as e:
-        st.error("❌ Error de Supabase al guardar (ver detalles)")
+        st.error("❌ Error de Supabase al guardar")
         st.code({
             "code": getattr(e, "code", None),
             "message": getattr(e, "message", None),
             "details": getattr(e, "details", None),
             "hint": getattr(e, "hint", None),
+            # Muestra un ejemplo del payload para debug (1er item)
+            "payload_sample": payload[:1],
         })
+        return False
 
-def delete_tasks(ids: List[int]) -> None:
+def delete_tasks(ids: List[int]) -> bool:
     if not ids:
-        return
+        return True
     sb = get_sb()
     if sb is None:
         st.warning("Sin conexión a Supabase: borrado NO persistido (demo).")
-        return
+        return False
     sb.table(TABLE).delete().in_("id", ids).execute()
+    return True
 
 # ----------------- Visual (opcional) -----------------
 def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: bool = True):
