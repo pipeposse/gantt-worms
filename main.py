@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
-import smtplib
-from email.message import EmailMessage
 
 import pandas as pd
 import numpy as np
@@ -12,24 +10,23 @@ import streamlit as st
 from supabase import create_client, Client
 import plotly.express as px
 
+# Tu DB tiene collaborators/tags como ARRAY => usamos listas Python
+DB_ARRAY_COLS = True
 TABLE = "tasks"
 
 ENUM_STATUS = ["No iniciado", "En progreso", "Bloqueado", "Completado"]
 ENUM_PRIORITY = ["Baja", "Media", "Alta", "Crítica"]
 ENUM_RAG = ["Verde", "Amarillo", "Rojo"]
 
-# columnas base que guardamos en tasks (sin people)
 FRONT_COLS = [
-    "id", "project_name", "task", "details",
-    "start", "end", "progress",
+    "id", "project_name", "task", "details", "owner",
+    "collaborators", "start", "end", "progress",
     "status", "priority", "rag", "milestone",
     "baseline_start", "baseline_end", "actual_start", "actual_end",
-    "phase", "workstream", "tags", "external_link",
-    "owner_user_id",  # editable aparte, pero lo soportamos si viene
-    "owner_email"     # opcional (si decidís denormalizar)
+    "phase", "workstream", "tags", "external_link"
 ]
 
-# ---- Supabase
+# ----------------- Supabase -----------------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY")
 
@@ -45,35 +42,7 @@ def get_sb() -> Optional[Client]:
 def supabase_ready() -> bool:
     return get_sb() is not None
 
-# ---- Email (opcional)
-def email_enabled() -> bool:
-    return bool(st.secrets.get("EMAIL_HOST") and st.secrets.get("EMAIL_USER") and st.secrets.get("EMAIL_PASSWORD"))
-
-def send_email(to_email: str, subject: str, html_body: str) -> bool:
-    try:
-        host = st.secrets["EMAIL_HOST"]
-        port = int(st.secrets.get("EMAIL_PORT", 587))
-        user = st.secrets["EMAIL_USER"]
-        pwd = st.secrets["EMAIL_PASSWORD"]
-        sender = st.secrets.get("EMAIL_FROM", user)
-
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = sender
-        msg["To"] = to_email
-        msg.set_content("Este aviso requiere un cliente de correo HTML.")
-        msg.add_alternative(html_body, subtype="html")
-
-        with smtplib.SMTP(host, port) as server:
-            server.starttls()
-            server.login(user, pwd)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        st.warning(f"No se pudo enviar email a {to_email}. Detalle: {e}")
-        return False
-
-# ---- Utils
+# ----------------- Utils -----------------
 def _coerce_date(x: Any) -> Optional[date]:
     if x is None:
         return None
@@ -95,6 +64,7 @@ def _coerce_date(x: Any) -> Optional[date]:
         return None
 
 def _date_to_str(d: Any) -> Optional[str]:
+    """'YYYY-MM-DD' o None (JSON-safe)."""
     if d is None:
         return None
     try:
@@ -112,6 +82,7 @@ def _date_to_str(d: Any) -> Optional[str]:
     return s if s else None
 
 def _to_list_from_csv(s: Any) -> Optional[List[str]]:
+    # None / NA
     if s is None:
         return None
     try:
@@ -119,8 +90,10 @@ def _to_list_from_csv(s: Any) -> Optional[List[str]]:
             return None
     except Exception:
         pass
+    # Lista ya válida
     if isinstance(s, list):
         return [str(x).strip() for x in s if str(x).strip() != ""]
+    # Cadena "a, b"
     s_str = str(s).strip()
     if s_str == "" or s_str.lower() in ("nan", "none", "<na>"):
         return None
@@ -160,25 +133,19 @@ def _to_bool(v: Any) -> bool:
         return bool(v)
     return bool(v)
 
-# ---- Schema & transforms
+# ----------------- Schema & transforms -----------------
 def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-
-    # columnas extra de la view (solo display)
-    display_cols = ["owner_name", "collaborators_names"]
-
-    for c in FRONT_COLS + display_cols:
+    for c in FRONT_COLS:
         if c not in df.columns:
             df[c] = pd.NA
 
     df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
-    df["owner_user_id"] = df["owner_user_id"].where(~pd.isna(df["owner_user_id"]), None)
 
     text_like = [
-        "project_name", "task", "details",
+        "project_name", "task", "details", "owner",
         "status", "priority", "rag", "phase",
-        "workstream", "tags", "external_link",
-        "owner_email", "owner_name", "collaborators_names"
+        "workstream", "tags", "external_link", "collaborators"
     ]
     for c in text_like:
         df[c] = df[c].astype("object")
@@ -198,25 +165,34 @@ def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     df.loc[~df["rag"].isin(ENUM_RAG) & ~df["rag"].isna(), "rag"] = None
 
-    # devolvemos sólo columnas base + display para la UI
-    return df[[*FRONT_COLS, "owner_name", "collaborators_names"]]
+    return df[FRONT_COLS]
 
 def df_from_supabase(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     if not rows:
         return ensure_schema(pd.DataFrame(columns=FRONT_COLS))
     df = pd.DataFrame(rows).rename(columns={"start_date": "start", "end_date": "end"})
+    # Para la UI mostramos CSV; la DB guarda arrays reales
+    if "collaborators" in df.columns:
+        df["collaborators"] = df["collaborators"].apply(_to_csv_from_list)
     if "tags" in df.columns:
-        df["tags"] = df["tags"].apply(_to_csv_from_list) if isinstance(df["tags"], pd.Series) else _to_csv_from_list(df["tags"])
+        if isinstance(df["tags"], pd.Series):
+            df["tags"] = df["tags"].apply(_to_csv_from_list)
+        else:
+            df["tags"] = _to_csv_from_list(df["tags"])
     return ensure_schema(df)
 
-def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
+
+def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
     df = ensure_schema(df)
-    out: List[Dict[str, Any]] = []
+    out = []
     for _, r in df.iterrows():
-        item: Dict[str, Any] = {
+        item = {
+            # OJO: NO incluimos 'id' acá; lo agregamos solo si tiene valor
             "project_name": (r["project_name"] or "").strip(),
             "task": (r["task"] or "").strip(),
             "details": (r["details"] or None),
+            "owner": (r["owner"] or None),
+            "collaborators": _to_list_from_csv(r["collaborators"]),
             "start_date": _date_to_str(_coerce_date(r["start"])),
             "end_date": _date_to_str(_coerce_date(r["end"])),
             "progress": _to_int(r["progress"]) or 0,
@@ -230,38 +206,15 @@ def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
             "actual_end": _date_to_str(_coerce_date(r["actual_end"])),
             "phase": (r["phase"] or None),
             "workstream": (r["workstream"] or None),
-            "tags": _to_list_from_csv(r["tags"]),  # tu DB tiene ARRAY para tags
+            "tags": _to_list_from_csv(r["tags"]),
             "external_link": (r["external_link"] or None),
-            "owner_user_id": (r["owner_user_id"] or None),  # se puede editar desde el panel people
-            "owner_email": (r["owner_email"] or None),
         }
         id_val = _to_int(r["id"])
         if id_val is not None:
-            item["id"] = id_val
-        # garantizar listas reales si vino string
-        if isinstance(item["tags"], str):
-            item["tags"] = _to_list_from_csv(item["tags"])
+            item["id"] = id_val  # solo cuando existe
         out.append(item)
     return out
 
-# ---- CRUD tasks
-try:
-    from postgrest.exceptions import APIError  # type: ignore
-except Exception:  # pragma: no cover
-    class APIError(Exception):
-        pass
-
-def fetch_tasks() -> pd.DataFrame:
-    """Lee desde la VIEW tasks_with_people para mostrar owner_name y collaborators_names."""
-    sb = get_sb()
-    if sb is None:
-        demo = pd.DataFrame([
-            {"id": 1, "project_name": "Demo", "task": "Tarea 1", "status": "No iniciado", "priority": "Media",
-             "progress": 0, "owner_name": "Felipe", "collaborators_names": "Carla, Nico"}
-        ])
-        return ensure_schema(demo)
-    res = sb.table("tasks_with_people").select("*").order("project_name").order("start_date").execute()
-    return df_from_supabase(res.data or [])
 
 def upsert_tasks(df: pd.DataFrame) -> bool:
     sb = get_sb()
@@ -273,12 +226,13 @@ def upsert_tasks(df: pd.DataFrame) -> bool:
     if not payload:
         return True
 
+    # Particionamos: nuevas (sin 'id') -> INSERT; existentes (con 'id') -> UPSERT
     to_insert, to_upsert = [], []
     for item in payload:
         if "id" in item and item["id"] is not None:
             to_upsert.append(item)
         else:
-            item.pop("id", None)
+            item.pop("id", None)  # asegurar que NO vaya 'id': null
             to_insert.append(item)
 
     try:
@@ -287,17 +241,43 @@ def upsert_tasks(df: pd.DataFrame) -> bool:
         if to_upsert:
             sb.table(TABLE).upsert(to_upsert, on_conflict="id").execute()
         return True
-    except APIError as e:
+    except Exception as e:
         st.error("❌ Error de Supabase al guardar")
-        st.code({
-            "code": getattr(e, "code", None),
-            "message": getattr(e, "message", None),
-            "details": getattr(e, "details", None),
-            "hint": getattr(e, "hint", None),
-            "sample_insert": to_insert[:1],
-            "sample_upsert": to_upsert[:1],
-        })
+        try:
+            from postgrest.exceptions import APIError  # type: ignore
+            if isinstance(e, APIError):
+                st.code({
+                    "code": getattr(e, "code", None),
+                    "message": getattr(e, "message", None),
+                    "details": getattr(e, "details", None),
+                    "hint": getattr(e, "hint", None),
+                    "sample_insert": to_insert[:1],
+                    "sample_upsert": to_upsert[:1],
+                })
+        except Exception:
+            st.write(e)
         return False
+
+      
+
+# ----------------- CRUD -----------------
+def fetch_tasks() -> pd.DataFrame:
+    sb = get_sb()
+    if sb is None:
+        demo = pd.DataFrame([
+            {"id": 1, "project_name": "Demo", "task": "Tarea 1", "status": "No iniciado", "priority": "Media", "progress": 0},
+            {"id": 2, "project_name": "Demo", "task": "Tarea 2", "status": "En Progreso", "priority": "Alta", "progress": 50},
+        ])
+        return ensure_schema(demo)
+    res = sb.table(TABLE).select("*").order("project_name").order("start_date").execute()
+    return df_from_supabase(res.data or [])
+
+try:
+    from postgrest.exceptions import APIError  # type: ignore
+except Exception:  # pragma: no cover
+    class APIError(Exception):
+        pass
+
 
 def delete_tasks(ids: List[int]) -> bool:
     if not ids:
@@ -319,78 +299,7 @@ def delete_tasks(ids: List[int]) -> bool:
         })
         return False
 
-# ---- People: users y colaboradores
-def fetch_users(active_only: bool = True) -> pd.DataFrame:
-    sb = get_sb()
-    if sb is None:
-        demo = pd.DataFrame([
-            {"id": "0000-1", "full_name": "Felipe Posse", "email": "pipeposse@gmail.com", "department": "Data", "is_active": True},
-            {"id": "0000-2", "full_name": "Carla Díaz", "email": "pipeposse@gmail.com", "department": "Operaciones", "is_active": True},
-            {"id": "0000-3", "full_name": "Nicolás Vázquez", "email": "pipeposse@gmail.com", "department": "Finanzas", "is_active": True},
-        ])
-        return demo
-    q = sb.table("users").select("id, full_name, email, department, is_active")
-    if active_only:
-        q = q.eq("is_active", True)
-    res = q.order("full_name").execute()
-    return pd.DataFrame(res.data or [])
-
-def get_task(task_id: int) -> Optional[Dict[str, Any]]:
-    sb = get_sb()
-    if sb is None:
-        return None
-    res = sb.table(TABLE).select("*").eq("id", task_id).execute()
-    rows = res.data or []
-    return rows[0] if rows else None
-
-def set_task_owner(task_id: int, owner_user_id: Optional[str]) -> bool:
-    """Actualiza owner_user_id; también owner/owner_email si querés denormalizar."""
-    sb = get_sb()
-    if sb is None:
-        return False
-    owner_name = None
-    owner_email = None
-    if owner_user_id:
-        u = sb.table("users").select("full_name,email").eq("id", owner_user_id).execute().data
-        if u:
-            owner_name = u[0].get("full_name")
-            owner_email = u[0].get("email")
-
-    try:
-        sb.table(TABLE).update({
-            "owner_user_id": owner_user_id,
-            "owner": owner_name,          # opcional si la columna existe
-            "owner_email": owner_email,   # opcional si la columna existe
-        }).eq("id", task_id).execute()
-        return True
-    except Exception as e:
-        st.error("No se pudo actualizar el owner")
-        st.write(e)
-        return False
-
-def get_task_collaborators(task_id: int) -> List[str]:
-    sb = get_sb()
-    if sb is None:
-        return []
-    res = sb.table("task_collaborators").select("user_id").eq("task_id", task_id).execute()
-    return [r["user_id"] for r in (res.data or [])]
-
-def replace_task_collaborators(task_id: int, user_ids: List[str]) -> bool:
-    sb = get_sb()
-    if sb is None:
-        return False
-    try:
-        sb.table("task_collaborators").delete().eq("task_id", task_id).execute()
-        if user_ids:
-            rows = [{"task_id": task_id, "user_id": uid} for uid in user_ids]
-            sb.table("task_collaborators").insert(rows).execute()
-        return True
-    except Exception as e:
-        st.error("No se pudieron actualizar colaboradores")
-        st.write(e)
-        return False
-
-# ---- Visual
+# ----------------- Visual (opcional) -----------------
 def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: bool = True):
     if df.empty:
         return px.line().update_layout(template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF")
@@ -403,7 +312,7 @@ def make_gantt(df: pd.DataFrame, color_by: str = "progress", group_by_project: b
     fig = px.timeline(
         df_plot,
         x_start="start", x_end="end", y=y, color=color_by,
-        hover_data={"task": True, "details": True, "owner_name": True, "collaborators_names": True,
+        hover_data={"task": True, "details": True, "owner": True, "collaborators": True,
                     "status": True, "priority": True, "rag": True,
                     "progress": True, "start": "|%Y-%m-%d", "end": "|%Y-%m-%d"},
         text="progress_label",
