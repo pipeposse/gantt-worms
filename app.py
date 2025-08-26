@@ -7,7 +7,7 @@ st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_
 
 # ---------- Estado inicial ----------
 if "df" not in st.session_state:
-    st.session_state.df = main.fetch_tasks()
+    st.session_state["df"] = main.fetch_tasks()
 
 st.title("🚀 Gantt de Proyectos (Worms)")
 st.caption("Edición nativa con `st.data_editor`. Guardá con 💾 y recargá desde Supabase cuando quieras.")
@@ -16,7 +16,7 @@ st.caption("Edición nativa con `st.data_editor`. Guardá con 💾 y recargá de
 st.subheader("✏️ Editor de tareas")
 
 # Agregamos una columna auxiliar para marcar filas a borrar
-df_edit = st.session_state.df.copy()
+df_edit = st.session_state["df"].copy()
 df_edit.insert(0, "BORRAR", False)
 
 config = {
@@ -59,35 +59,38 @@ with col1:
         # quitar col auxiliar y normalizar
         to_save = edited.drop(columns=["BORRAR"], errors="ignore")
         to_save = main.ensure_schema(to_save)
-        ok = main.upsert_tasks(st.session_state["df"])
-if ok:
-    st.success("Cambios guardados en Supabase.")
-    st.session_state["df"] = main.fetch_tasks()
-        
-       
 
-        
+        ok = main.upsert_tasks(to_save)  # <<< guarda lo editado
+
+        if ok:
+            st.success("Cambios guardados en Supabase.")
+            st.session_state["df"] = main.fetch_tasks()
+        else:
+            st.warning("No se guardó. Revisá el bloque de error mostrado arriba.")
 
 with col2:
     if st.button("🗑️ Borrar marcadas"):
         ids = edited.loc[edited["BORRAR"] == True, "id"].dropna().astype(int).tolist()
         if ids:
-            main.delete_tasks(ids)
-            st.success(f"Eliminadas {len(ids)} fila(s).")
-            st.session_state.df = main.fetch_tasks()
+            ok_del = main.delete_tasks(ids)
+            if ok_del:
+                st.success(f"Eliminadas {len(ids)} fila(s).")
+                st.session_state["df"] = main.fetch_tasks()
+            else:
+                st.warning("No se pudo borrar (ver error arriba).")
         else:
             st.warning("No hay filas con ID marcadas para borrar.")
 
 with col3:
     if st.button("🔄 Recargar desde Supabase"):
-        st.session_state.df = main.fetch_tasks()
+        st.session_state["df"] = main.fetch_tasks()
         st.info("Datos recargados.")
 
 st.divider()
 
 # ---------- Filtros de vista ----------
 st.sidebar.title("🔎 Filtros")
-df_view = st.session_state.df.copy()
+df_view = st.session_state["df"].copy()
 
 projects = st.sidebar.multiselect("Proyecto", sorted(df_view["project_name"].dropna().unique().tolist()))
 statuses = st.sidebar.multiselect("Estado", main.ENUM_STATUS)
@@ -122,7 +125,7 @@ st.dataframe(df_view, use_container_width=True)
 
 # ---------- Export ----------
 st.subheader("📤 Exportar")
-csv_bytes = st.session_state.df.to_csv(index=False).encode("utf-8")
+csv_bytes = st.session_state["df"].to_csv(index=False).encode("utf-8")
 st.download_button("⬇️ CSV (todo)", data=csv_bytes, file_name="gantt_tasks.csv", mime="text/csv")
 
 st.caption("UI simple y robusta: st.data_editor + Supabase. Si querés, luego reactivamos AgGrid.")
