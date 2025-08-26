@@ -181,17 +181,18 @@ def df_from_supabase(rows: List[Dict[str, Any]]) -> pd.DataFrame:
             df["tags"] = _to_csv_from_list(df["tags"])
     return ensure_schema(df)
 
-def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
+
+def payload_for_upsert(df: pd.DataFrame) -> list[dict]:
     df = ensure_schema(df)
-    out: List[Dict[str, Any]] = []
+    out = []
     for _, r in df.iterrows():
-        # Armamos SIN 'id'; lo agregamos solo si viene con valor (evita "id": null)
-        item: Dict[str, Any] = {
+        item = {
+            # OJO: NO incluimos 'id' acá; lo agregamos solo si tiene valor
             "project_name": (r["project_name"] or "").strip(),
             "task": (r["task"] or "").strip(),
             "details": (r["details"] or None),
             "owner": (r["owner"] or None),
-            "collaborators": _to_list_from_csv(r["collaborators"]) if DB_ARRAY_COLS else _to_csv_from_list(r["collaborators"]),
+            "collaborators": _to_list_from_csv(r["collaborators"]),
             "start_date": _date_to_str(_coerce_date(r["start"])),
             "end_date": _date_to_str(_coerce_date(r["end"])),
             "progress": _to_int(r["progress"]) or 0,
@@ -205,24 +206,59 @@ def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
             "actual_end": _date_to_str(_coerce_date(r["actual_end"])),
             "phase": (r["phase"] or None),
             "workstream": (r["workstream"] or None),
-            "tags": _to_list_from_csv(r["tags"]) if DB_ARRAY_COLS else _to_csv_from_list(r["tags"]),
+            "tags": _to_list_from_csv(r["tags"]),
             "external_link": (r["external_link"] or None),
         }
-
-        # id solo si existe
         id_val = _to_int(r["id"])
         if id_val is not None:
-            item["id"] = id_val
-
-        # Forzar listas reales si por UI vino string (defensa extra)
-        if DB_ARRAY_COLS:
-            for k in ("collaborators", "tags"):
-                v = item.get(k)
-                if isinstance(v, str):
-                    item[k] = _to_list_from_csv(v)
-
+            item["id"] = id_val  # solo cuando existe
         out.append(item)
     return out
+
+
+def upsert_tasks(df: pd.DataFrame) -> bool:
+    sb = get_sb()
+    if sb is None:
+        st.warning("Sin conexión a Supabase: cambios NO persistidos (demo).")
+        return False
+
+    payload = payload_for_upsert(df)
+    if not payload:
+        return True
+
+    # Particionamos: nuevas (sin 'id') -> INSERT; existentes (con 'id') -> UPSERT
+    to_insert, to_upsert = [], []
+    for item in payload:
+        if "id" in item and item["id"] is not None:
+            to_upsert.append(item)
+        else:
+            item.pop("id", None)  # asegurar que NO vaya 'id': null
+            to_insert.append(item)
+
+    try:
+        if to_insert:
+            sb.table(TABLE).insert(to_insert).execute()
+        if to_upsert:
+            sb.table(TABLE).upsert(to_upsert, on_conflict="id").execute()
+        return True
+    except Exception as e:
+        st.error("❌ Error de Supabase al guardar")
+        try:
+            from postgrest.exceptions import APIError  # type: ignore
+            if isinstance(e, APIError):
+                st.code({
+                    "code": getattr(e, "code", None),
+                    "message": getattr(e, "message", None),
+                    "details": getattr(e, "details", None),
+                    "hint": getattr(e, "hint", None),
+                    "sample_insert": to_insert[:1],
+                    "sample_upsert": to_upsert[:1],
+                })
+        except Exception:
+            st.write(e)
+        return False
+
+      
 
 # ----------------- CRUD -----------------
 def fetch_tasks() -> pd.DataFrame:
@@ -242,27 +278,6 @@ except Exception:  # pragma: no cover
     class APIError(Exception):
         pass
 
-def upsert_tasks(df: pd.DataFrame) -> bool:
-    sb = get_sb()
-    if sb is None:
-        st.warning("Sin conexión a Supabase: cambios NO persistidos (demo).")
-        return False
-    payload = payload_for_upsert(df)
-    if not payload:
-        return True
-    try:
-        sb.table(TABLE).upsert(payload, on_conflict="id").execute()
-        return True
-    except APIError as e:
-        st.error("❌ Error de Supabase al guardar")
-        st.code({
-            "code": getattr(e, "code", None),
-            "message": getattr(e, "message", None),
-            "details": getattr(e, "details", None),
-            "hint": getattr(e, "hint", None),
-            "payload_sample": payload[:1],
-        })
-        return False
 
 def delete_tasks(ids: List[int]) -> bool:
     if not ids:
