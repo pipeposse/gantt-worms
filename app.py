@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 import main
-
+import notify
 st.set_page_config(page_title="Gantt Proyectos (Supabase)", layout="wide", page_icon="📊")
 
 # ---------- Estado inicial ----------
@@ -126,3 +126,72 @@ csv_bytes = st.session_state["df"].to_csv(index=False).encode("utf-8")
 st.download_button("⬇️ CSV (todo)", data=csv_bytes, file_name="gantt_tasks.csv", mime="text/csv")
 
 st.caption("UI simple y robusta: st.data_editor + Supabase. Si querés, luego reactivamos AgGrid.")
+
+st.divider()
+st.subheader("📣 Espacio de notificación")
+
+st.caption("Seleccioná las filas a notificar. Se enviará un correo al Owner y a los colaboradores, resolviendo emails desde la tabla `users` por nombre.")
+
+# Tabla de selección (no modifica la DB)
+df_notify = st.session_state["df"].copy()
+df_notify.insert(0, "ENVIAR", False)
+
+cols_min = [
+    "ENVIAR", "id", "project_name", "task", "owner", "collaborators",
+    "start", "end", "status", "priority", "progress"
+]
+present_cols = [c for c in cols_min if c in df_notify.columns]
+df_notify = df_notify[present_cols]
+
+notify_cfg = {
+    "ENVIAR": st.column_config.CheckboxColumn("Enviar"),
+    "id": st.column_config.NumberColumn("ID", disabled=True),
+    "project_name": st.column_config.TextColumn("Proyecto", disabled=True),
+    "task": st.column_config.TextColumn("Tarea", disabled=True),
+    "owner": st.column_config.TextColumn("Owner", disabled=True),
+    "collaborators": st.column_config.TextColumn("Colaboradores", disabled=True),
+    "start": st.column_config.DateColumn("Inicio", format="YYYY-MM-DD", disabled=True),
+    "end": st.column_config.DateColumn("Fin", format="YYYY-MM-DD", disabled=True),
+    "status": st.column_config.TextColumn("Estado", disabled=True),
+    "priority": st.column_config.TextColumn("Prioridad", disabled=True),
+    "progress": st.column_config.NumberColumn("Progreso (%)", disabled=True),
+}
+
+pick = st.data_editor(
+    df_notify,
+    column_config=notify_cfg,
+    use_container_width=True,
+    hide_index=True,
+    num_rows="fixed",
+    key="notify_editor",
+)
+
+c1, c2 = st.columns([1,2])
+with c1:
+    preview_only = st.checkbox("Solo previsualizar (no enviar)", value=not notify.email_enabled())
+
+selected = pick[pick["ENVIAR"] == True] if "ENVIAR" in pick else pd.DataFrame()
+
+if st.button("✉️ Construir y (si aplica) enviar"):
+    if selected.empty:
+        st.warning("No marcaste ninguna fila.")
+    else:
+        # Preview del HTML
+        html = notify.build_digest_html(selected)
+        st.markdown("**Vista previa del correo:**", help="Esto es exactamente lo que recibirán los destinatarios.")
+        st.markdown(html, unsafe_allow_html=True)
+
+        # Resolver destinatarios
+        recipients, unresolved = notify.resolve_recipients(selected)
+        st.write(f"**Destinatarios resueltos ({len(recipients)}):**", recipients)
+        if unresolved:
+            st.warning(f"Nombres sin email en `users` ({len(unresolved)}): {unresolved}")
+
+        # Envío real (si hay SMTP y no es solo preview)
+        if not preview_only and notify.email_enabled() and recipients:
+            res = notify.send_digest_for_rows(selected)
+            st.success(f"Enviados: {res['sent']} / Destinatarios: {len(res['recipients'])}")
+            if res["failed"]:
+                st.error(f"Fallidos: {res['failed']}")
+        else:
+            st.info("Solo previsualización (o SMTP no configurado). No se enviaron correos.")
