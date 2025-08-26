@@ -12,10 +12,9 @@ if "df" not in st.session_state:
 st.title("🚀 Gantt de Proyectos (Worms)")
 st.caption("Edición nativa con `st.data_editor`. Guardá con 💾 y recargá desde Supabase cuando quieras.")
 
-# ---------- Editor (nativo) ----------
+# ---------- Editor ----------
 st.subheader("✏️ Editor de tareas")
 
-# Agregamos una columna auxiliar para marcar filas a borrar
 df_edit = st.session_state["df"].copy()
 df_edit.insert(0, "BORRAR", False)
 
@@ -47,7 +46,7 @@ edited = st.data_editor(
     df_edit,
     column_config=config,
     use_container_width=True,
-    num_rows="dynamic",  # permite agregar filas desde la UI
+    num_rows="dynamic",
     hide_index=True,
 )
 
@@ -56,12 +55,10 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     if st.button("💾 Guardar (upsert)"):
-        # quitar col auxiliar y normalizar
         to_save = edited.drop(columns=["BORRAR"], errors="ignore")
         to_save = main.ensure_schema(to_save)
 
-        ok = main.upsert_tasks(to_save)  # <<< guarda lo editado
-
+        ok = main.upsert_tasks(to_save)
         if ok:
             st.success("Cambios guardados en Supabase.")
             st.session_state["df"] = main.fetch_tasks()
