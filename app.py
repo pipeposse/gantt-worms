@@ -195,3 +195,109 @@ if st.button("✉️ Construir y (si aplica) enviar"):
                 st.error(f"Fallidos: {res['failed']}")
         else:
             st.info("Solo previsualización (o SMTP no configurado). No se enviaron correos.")
+
+
+# ========== Mapeo de destinatarios por tarea ==========
+st.divider()
+st.subheader("📬 Mapeo de destinatarios por tarea")
+
+# Intentamos leer las vistas SQL si existen; si no, calculamos el mapeo en Python.
+sb = main.get_sb()
+
+def _safe_query(table_name: str):
+    if sb is None:
+        return pd.DataFrame()
+    try:
+        res = sb.table(table_name).select("*").order("project_name").order("task_id").execute()
+        return pd.DataFrame(res.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+df_sum = _safe_query("tasks_recipients_summary")
+
+if not df_sum.empty:
+    st.dataframe(df_sum, use_container_width=True)
+    with st.expander("Ver detalle por destinatario (expandido)", expanded=False):
+        df_exp = _safe_query("tasks_recipients_expanded")
+        st.dataframe(df_exp, use_container_width=True)
+        st.caption("resolved = true => email resuelto en users. Si es false, añadí el nombre a la tabla users.")
+else:
+    # --------- Fallback: resolver en la app sin vistas SQL ---------
+    st.info("Mostrando mapeo calculado en la app (si querés vistas SQL, ejecutá los scripts propuestos).")
+
+    # 1) Cargar usuarios activos
+    users_df = pd.DataFrame()
+    if sb is not None:
+        try:
+            ures = sb.table("users").select("full_name,email,is_active").execute()
+            users_df = pd.DataFrame(ures.data or [])
+            if not users_df.empty and "is_active" in users_df.columns:
+                users_df = users_df[users_df["is_active"].fillna(True)]
+        except Exception:
+            users_df = pd.DataFrame()
+
+    # 2) Normalizar nombre -> email
+    def _norm_name(s):
+        if s is None:
+            return None
+        s = str(s).strip()
+        if not s:
+            return None
+        return " ".join(s.split()).lower()
+
+    name_to_email = {}
+    if not users_df.empty:
+        for _, u in users_df.iterrows():
+            nn = _norm_name(u.get("full_name"))
+            if nn:
+                name_to_email[nn] = u.get("email")
+
+    # 3) Helpers
+    def _split_csv(s):
+        if s is None:
+            return []
+        s = str(s).strip()
+        if not s:
+            return []
+        return [p.strip() for p in s.split(",") if p.strip()]
+
+    # 4) Construir mapeo usando el DF actual (tareas cargadas en la app)
+    rows = []
+    for _, r in st.session_state["df"].iterrows():
+        owner_email = name_to_email.get(_norm_name(r.get("owner")))
+        collabs = _split_csv(r.get("collaborators"))
+        collab_emails = sorted({
+            name_to_email.get(_norm_name(x))
+            for x in collabs
+            if name_to_email.get(_norm_name(x))
+        })
+        unresolved = sorted({
+            x for x in collabs
+            if _norm_name(x) not in name_to_email
+        })
+        rows.append({
+            "task_id": r.get("id"),
+            "project_name": r.get("project_name"),
+            "task": r.get("task"),
+            "owner_email": owner_email,
+            "collaborator_emails": ", ".join(collab_emails) if collab_emails else None,
+            "collaborator_unresolved_names": ", ".join(unresolved) if unresolved else None
+        })
+
+    map_df = pd.DataFrame(rows)
+    st.dataframe(map_df, use_container_width=True)
+
+
+st.divider()
+st.subheader("🔧 Test SMTP")
+test_to = st.text_input("Enviar mail de prueba a:", value="tu-email@gmail.com")
+if st.button("Enviar prueba"):
+    if not notify.email_enabled():
+        st.error("Faltan EMAIL_* en secrets.")
+    else:
+        ok = notify.send_email(
+            to_email=test_to,
+            subject="[Gantt] Prueba SMTP",
+            html_body="<b>¡Funciona!</b> Esta es una prueba desde Streamlit."
+        )
+        st.success("Enviado ✅" if ok else "Falló ❌")
