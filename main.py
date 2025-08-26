@@ -61,8 +61,26 @@ def _coerce_date(x: Any) -> Optional[date]:
     except Exception:
         return None
 
+def _date_to_str(d: Any) -> Optional[str]:
+    """Devuelve 'YYYY-MM-DD' o None. Acepta date/datetime/Timestamp/str/None."""
+    if d is None:
+        return None
+    try:
+        if pd.isna(d):
+            return None
+    except Exception:
+        pass
+    if isinstance(d, pd.Timestamp):
+        d = d.date()
+    if isinstance(d, datetime):
+        d = d.date()
+    if isinstance(d, date):
+        return d.isoformat()
+    # si ya es string, lo devolvemos limpio
+    s = str(d).strip()
+    return s if s else None
+
 def _to_list_from_csv(s: Any) -> Optional[List[str]]:
-    # None / NA
     if s is None:
         return None
     try:
@@ -70,10 +88,8 @@ def _to_list_from_csv(s: Any) -> Optional[List[str]]:
             return None
     except Exception:
         pass
-    # Lista
     if isinstance(s, list):
         return [str(x).strip() for x in s if str(x).strip() != ""]
-    # Cadena
     s_str = str(s).strip()
     if s_str == "" or s_str.lower() in ("nan", "none", "<na>"):
         return None
@@ -91,6 +107,27 @@ def _to_csv_from_list(lst: Any) -> str:
         return ", ".join(str(x).strip() for x in lst if str(x).strip() != "")
     s = str(lst).strip()
     return "" if s.lower() in ("nan", "none", "<na>") else s
+
+def _to_int(v: Any) -> Optional[int]:
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except Exception:
+        if v is None:
+            return None
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+def _to_bool(v: Any) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, (np.bool_,)):
+        return bool(v)
+    return bool(v)
 
 # ----------------- Schema & transforms -----------------
 def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
@@ -141,26 +178,27 @@ def df_from_supabase(rows: List[Dict[str, Any]]) -> pd.DataFrame:
 
 def payload_for_upsert(df: pd.DataFrame) -> List[Dict[str, Any]]:
     df = ensure_schema(df)
-    out = []  # type: List[Dict[str, Any]]
+    out: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         item = {
-            "id": int(r["id"]) if not pd.isna(r["id"]) else None,
+            "id": _to_int(r["id"]),
             "project_name": (r["project_name"] or "").strip(),
             "task": (r["task"] or "").strip(),
             "details": (r["details"] or None),
             "owner": (r["owner"] or None),
             "collaborators": _to_list_from_csv(r["collaborators"]),
-            "start_date": _coerce_date(r["start"]),
-            "end_date": _coerce_date(r["end"]),
-            "progress": int(r["progress"]) if not pd.isna(r["progress"]) else 0,
+            # 👇 Fechas como strings ISO (JSON-safe)
+            "start_date": _date_to_str(_coerce_date(r["start"])),
+            "end_date": _date_to_str(_coerce_date(r["end"])),
+            "progress": _to_int(r["progress"]) or 0,
             "status": (r["status"] or "No iniciado"),
             "priority": (r["priority"] or "Media"),
             "rag": (r["rag"] if r["rag"] in ENUM_RAG else None),
-            "milestone": bool(r["milestone"]),
-            "baseline_start": _coerce_date(r["baseline_start"]),
-            "baseline_end": _coerce_date(r["baseline_end"]),
-            "actual_start": _coerce_date(r["actual_start"]),
-            "actual_end": _coerce_date(r["actual_end"]),
+            "milestone": _to_bool(r["milestone"]),
+            "baseline_start": _date_to_str(_coerce_date(r["baseline_start"])),
+            "baseline_end": _date_to_str(_coerce_date(r["baseline_end"])),
+            "actual_start": _date_to_str(_coerce_date(r["actual_start"])),
+            "actual_end": _date_to_str(_coerce_date(r["actual_end"])),
             "phase": (r["phase"] or None),
             "workstream": (r["workstream"] or None),
             "tags": _to_list_from_csv(r["tags"]),
